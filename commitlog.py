@@ -10,7 +10,7 @@ from logging import critical as log
 
 
 async def request_handler(reader, writer):
-    HANDLERS = dict(paxos=paxos_server)
+    HANDLERS = dict(paxos=paxos_server, max_seq=max_seq_server)
 
     peer = writer.get_extra_info('socket').getpeername()
 
@@ -22,7 +22,7 @@ async def request_handler(reader, writer):
                 log('req{} disconnected or invalid header'.format(peer))
                 return writer.close()
 
-            if cmd not in ('paxos', 'dump'):
+            if cmd not in HANDLERS:
                 log('req{} {} invalid command'.format(peer, cmd))
                 return writer.close()
 
@@ -111,6 +111,35 @@ def get_dirname(log_id, log_seq):
     return os.path.join(x, str(log_seq // 1000000), str(log_seq // 1000))
 
 
+def max_seq_server(meta, data):
+    log_id = meta
+
+    h = hashlib.sha256(log_id.encode()).hexdigest()
+    dirname = os.path.join('logs', h[0:3], h[3:6], log_id)
+
+    if not os.path.isdir(dirname):
+        return 'OK', 0, None
+
+    level1 = [int(d) for d in os.listdir(dirname) if d.isdigit()]
+    for l1 in sorted(level1, reverse=True):
+        l2_path = os.path.join(dirname, str(l1))
+        l2_dirs = [int(d) for d in os.listdir(l2_path) if d.isdigit()]
+
+        for l2 in sorted(l2_dirs, reverse=True):
+            l3_path = os.path.join(l2_path, str(l2))
+            l3_files = [int(d) for d in os.listdir(l3_path) if d.isdigit()]
+
+            for f in sorted(l3_files, reverse=True):
+                path = os.path.join(dirname, str(l1), str(l2), str(f))
+
+                with open(path) as fd:
+                    obj = json.loads(fd.readline())
+                    if 'md5' in obj:
+                        return 'OK', int(f), None
+
+    return 'OK', 0, None
+
+
 def paxos_server(meta, data):
     phase, log_id, log_seq, proposal_seq = meta
 
@@ -149,7 +178,8 @@ def paxos_server(meta, data):
             return 'OK', dict(accepted_seq=accepted_seq), fd.read()
 
     if 'accept' == phase and proposal_seq == promised_seq:
-        hdr = dict(md5=hashlib.md5(data).hexdigest())
+        hdr = dict(logid=log_id, logseq=log_seq,
+                   md5=hashlib.md5(data).hexdigest())
         dump(filename + '.' + str(proposal_seq), hdr, b'\n', data)
 
         dump(filename, dict(
@@ -200,7 +230,17 @@ class Client():
         self.rpc = RPC(servers)
         self.quorum = int(len(servers)/2) + 1
 
+    async def get_max_seq(self, log_id):
+        res = await self.rpc('max_seq', log_id)
+        if len(res) >= self.quorum:
+            return max([r[0] for r in res.values()])
+
     async def append(self, log_id, log_seq, blob):
+        max_seq = await self.get_max_seq(log_id)
+
+        if log_seq != max_seq+1:
+            return dict(status='INVALID_SEQ', next_seq=max_seq+1)
+
         ts = time.time()
         status = await paxos_client(
             self.rpc, self.quorum, log_id, log_seq, blob)
@@ -229,8 +269,7 @@ def main():
 
         blob = sys.stdin.buffer.read()
         result = asyncio.run(Client(servers).append(log_id, log_seq, blob))
-        print('{} {} {} {}'.format(
-            log_id, log_seq, result['status'], result['msec']))
+        print(result)
 
         exit(0) if 'OK' == result['status'] else exit(1)
 
