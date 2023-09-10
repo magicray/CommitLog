@@ -6,18 +6,23 @@ import uuid
 import hashlib
 import asyncio
 import logging
+import traceback
 from logging import critical as log
 
 
 async def request_handler(reader, writer):
-    HANDLERS = dict(paxos=paxos_server, max_seq=max_seq_server)
+    HANDLERS = dict(paxos=paxos_server)
 
     peer = writer.get_extra_info('socket').getpeername()
 
     while True:
         try:
             try:
-                cmd, req_length, req_hdr = json.loads(await reader.readline())
+                line = await reader.readline()
+                if not line:
+                    return writer.close()
+
+                cmd, req_length, req_hdr = json.loads(line)
             except Exception:
                 log('req{} disconnected or invalid header'.format(peer))
                 return writer.close()
@@ -31,6 +36,7 @@ async def request_handler(reader, writer):
                     req_hdr,
                     await reader.readexactly(req_length))
             except Exception as e:
+                traceback.print_exc()
                 status, res_hdr, data = 'EXCEPTION', str(e), None
 
             res_length = len(data) if data else 0
@@ -88,7 +94,8 @@ class RPC():
             *[self._rpc(s, cmd, meta, data) for s in servers],
             return_exceptions=True)
 
-        return {s: (r[1], r[2]) for s, r in zip(servers, res) if 'OK' == r[0]}
+        return {s: (r[1], r[2]) for s, r in zip(servers, res)
+                if type(r) is tuple and 'OK' == r[0]}
 
 
 def dump(path, *objects):
@@ -105,124 +112,90 @@ def dump(path, *objects):
     os.replace(tmp, path)
 
 
-def get_dirname(log_id, log_seq):
-    h = hashlib.sha256(log_id.encode()).hexdigest()
-    x = os.path.join('logs', h[0:3], h[3:6], log_id)
-    return os.path.join(x, str(log_seq // 1000000), str(log_seq // 1000))
-
-
-def max_seq_server(meta, data):
-    log_id = meta
-
-    h = hashlib.sha256(log_id.encode()).hexdigest()
-    dirname = os.path.join('logs', h[0:3], h[3:6], log_id)
-
-    if not os.path.isdir(dirname):
-        return 'OK', 0, None
-
-    level1 = [int(d) for d in os.listdir(dirname) if d.isdigit()]
-    for l1 in sorted(level1, reverse=True):
-        l2_path = os.path.join(dirname, str(l1))
-        l2_dirs = [int(d) for d in os.listdir(l2_path) if d.isdigit()]
-
-        for l2 in sorted(l2_dirs, reverse=True):
-            l3_path = os.path.join(l2_path, str(l2))
-            l3_files = [int(d) for d in os.listdir(l3_path) if d.isdigit()]
-
-            for f in sorted(l3_files, reverse=True):
-                path = os.path.join(dirname, str(l1), str(l2), str(f))
-
-                with open(path) as fd:
-                    obj = json.loads(fd.readline())
-                    if 'md5' in obj:
-                        return 'OK', int(f), None
-
-    return 'OK', 0, None
-
-
 def paxos_server(meta, data):
     phase, log_id, log_seq, proposal_seq = meta
 
     if os.path.dirname(log_id):
         return 'INVALID_LOG_ID', log_id, None
 
-    dirname = get_dirname(log_id, log_seq)
-    filename = os.path.join(dirname, str(log_seq))
+    # Directory for this log_id
+    h = hashlib.sha256(log_id.encode()).hexdigest()
+    logdir = os.path.join('logs', h[0:3], h[3:6], log_id)
 
-    promised_seq = accepted_seq = 0
-    if os.path.isfile(filename):
-        with open(filename, 'rb') as fd:
-            obj = json.loads(fd.readline())
+    # File that stores the promised seq for upcoming multi-paxos rounds
+    promise_filepath = os.path.join(logdir, 'promised')
 
-            if 'md5' in obj:
-                # This value is already learned, pretend to participate in
-                # paxos rounds without modifying anything
-                if 'promise' == phase:
-                    return 'OK', dict(accepted_seq=99999999999999), fd.read()
+    # File that stores the actual data
+    log_filepath = os.path.join(logdir, str(log_seq // 1000000),
+                                str(log_seq // 1000), str(log_seq))
 
-                return 'OK', None, None
+    # Check if there is already a more recent leader
+    promised_seq = 0
+    if os.path.isfile(promise_filepath):
+        with open(promise_filepath) as fd:
+            promised_seq = json.load(fd)['promised_seq']
 
-            promised_seq = obj['promised_seq']
-            accepted_seq = obj['accepted_seq']
-
+    # This requestor wants to become the new multi-paxos leader
     if 'promise' == phase and proposal_seq > promised_seq:
-        dump(filename, dict(
-            promised_seq=proposal_seq,
-            accepted_seq=accepted_seq))
+        # Accept this as the new leader. Any subsequent requests from
+        # any stale, older leaders would be rejected
+        dump(promise_filepath, dict(promised_seq=proposal_seq))
 
-        if 0 == accepted_seq:
-            return 'OK', dict(accepted_seq=0), b''
+        # Return if a value for this log_seq was already accepted.
+        # Client is supposed to pick the one with the most recent accepted_seq
+        # and use that in the ACCEPT phase later.
+        if os.path.isfile(log_filepath):
+            with open(log_filepath, 'rb') as fd:
+                accepted_seq = json.loads(fd.readline())['accepted_seq']
 
-        with open(filename + '.' + str(accepted_seq), 'rb') as fd:
-            ignore_this = fd.readline()
-            return 'OK', dict(accepted_seq=accepted_seq), fd.read()
+                return 'OK', accepted_seq, fd.read()
 
+        return 'OK', 0, None
+
+    # Most request would be only this. PROMISE phase is run once by a leader.
+    # This value is either the most recent returned to client in the PROMISE
+    # phase or the value proposed by the client if no value was already
+    # accepted and returned in the PROMISE phase.
     if 'accept' == phase and proposal_seq == promised_seq:
-        hdr = dict(logid=log_id, logseq=log_seq,
-                   md5=hashlib.md5(data).hexdigest())
-        dump(filename + '.' + str(proposal_seq), hdr, b'\n', data)
+        md5 = hashlib.md5(data).hexdigest()
+        hdr = dict(log_id=log_id, log_seq=log_seq,
+                   accepted_seq=proposal_seq,
+                   md5=md5)
+        dump(log_filepath, hdr, b'\n', data)
 
-        dump(filename, dict(
-            promised_seq=proposal_seq,
-            accepted_seq=proposal_seq))
+        return 'OK', None, md5.encode()
 
-        return 'OK', None, None
-
-    if 'learn' == phase and proposal_seq == promised_seq == accepted_seq:
-        os.rename(filename + '.' + str(proposal_seq), filename)
-        return 'OK', None, None
+    return 'INVALID_PROPOSAL_SEQ', None, None
 
 
-async def paxos_client(rpc, quorum, log_id, log_seq, blob):
-    # paxos seq is an integer in the following format - YYYYmmddHHMMSS
-    # This would increase monotonically. Even if same seq is generated by
-    # more than one instances of paxos rounds, protocol handles it and rejects
-    # the later round (as proposal_seq should be GREATER than the promised_seq)
-    paxos = [None, log_id, log_seq, int(time.strftime('%Y%m%d%H%M%S'))]
-
-    paxos[0] = 'promise'
-    res = await rpc('paxos', paxos)
-    if quorum > len(res):
-        return 'NO_PROMISE_QUORUM'
-
-    # Find out the accepted value with the highest accepted_seq
+async def paxos_client(rpc, quorum, log_id, log_seq, blob, proposal_seq=None):
+    paxos = [None, log_id, log_seq, proposal_seq]
     proposal = (0, blob)
-    for meta, data in res.values():
-        if meta['accepted_seq'] > proposal[0]:
-            proposal = (meta['accepted_seq'], data)
+
+    if proposal_seq is None:
+        # Run PROMISE phase once for a leader,
+        # only ACCEPT phase is needed for later rounds.
+        paxos = [None, log_id, log_seq, int(time.strftime('%Y%m%d%H%M%S'))]
+
+        paxos[0] = 'promise'
+        res = await rpc('paxos', paxos)
+        if quorum > len(res):
+            return dict(status='NO_QUORUM', proposal_seq=paxos[3])
+
+        # Find out the accepted value with the highest accepted_seq
+        for accepted_seq, data in res.values():
+            if accepted_seq > proposal[0]:
+                proposal = (accepted_seq, data)
 
     if not proposal[1]:
-        return 'EMPTY_BLOB'
+        return dict(status='EMPTY_BLOB', proposal_seq=paxos[3])
 
     paxos[0] = 'accept'
     if quorum > len(await rpc('paxos', paxos, proposal[1])):
-        return 'NO_ACCEPT_QUORUM'
+        return dict(status='NO_QUORUM', proposal_seq=paxos[3])
 
-    paxos[0] = 'learn'
-    if quorum > len(await rpc('paxos', paxos)):
-        return 'NO_LEARN_QUORUM'
-
-    return 'OK' if 0 == proposal[0] else 'CONFLICT'
+    return dict(proposal_seq=paxos[3],
+                status='OK' if 0 == proposal[0] else 'CONFLICT')
 
 
 class Client():
@@ -230,21 +203,22 @@ class Client():
         self.rpc = RPC(servers)
         self.quorum = int(len(servers)/2) + 1
 
-    async def get_max_seq(self, log_id):
-        res = await self.rpc('max_seq', log_id)
-        if len(res) >= self.quorum:
-            return max([r[0] for r in res.values()])
-
     async def append(self, log_id, log_seq, blob):
-        max_seq = await self.get_max_seq(log_id)
-
-        if log_seq != max_seq+1:
-            return dict(status='INVALID_SEQ', next_seq=max_seq+1)
-
         ts = time.time()
-        status = await paxos_client(
-            self.rpc, self.quorum, log_id, log_seq, blob)
-        return dict(status=status, msec=int((time.time() - ts)*1000))
+        while True:
+            result = await paxos_client(
+                self.rpc, self.quorum, log_id, log_seq, blob)
+
+            if 'NO_QUORUM' != result['status']:
+                break
+
+            await asyncio.sleep(1)
+
+        result['log_id'] = log_id
+        result['log_seq'] = log_seq
+        result['msec'] = int((time.time() - ts)*1000)
+
+        return result
 
     async def tail(self, log_id, log_seq):
         pass
