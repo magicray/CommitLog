@@ -62,13 +62,19 @@ class RPC():
             ip, port = srv.split(':')
             self.conns[(ip, int(port))] = None, None
 
-    async def _rpc(self, server, cmd, meta=None, data=None):
+    async def _rpc(self, server, cmd, meta=None, data=b''):
         try:
             if self.conns[server][0] is None or self.conns[server][1] is None:
                 self.conns[server] = await asyncio.open_connection(
                     server[0], server[1])
 
             reader, writer = self.conns[server]
+
+            if data and type(data) is not bytes:
+                try:
+                    data = json.dumps(data).encode()
+                except Exception as e:
+                    data = str(e).encode()
 
             length = len(data) if data else 0
 
@@ -87,7 +93,7 @@ class RPC():
 
             self.conns[server] = None, None, None
 
-    async def __call__(self, cmd, meta=None, data=None):
+    async def __call__(self, cmd, meta=None, data=b''):
         servers = self.conns.keys()
 
         res = await asyncio.gather(
@@ -202,21 +208,28 @@ class Client():
     def __init__(self, servers):
         self.rpc = RPC(servers)
         self.quorum = int(len(servers)/2) + 1
+        self.proposal_seq = None
 
     async def append(self, log_id, log_seq, blob):
-        ts = time.time()
+        count = 0
+        timestamp = time.time()
         while True:
             result = await paxos_client(
-                self.rpc, self.quorum, log_id, log_seq, blob)
+                self.rpc, self.quorum, log_id, log_seq, blob,
+                self.proposal_seq)
 
             if 'NO_QUORUM' != result['status']:
                 break
 
+            count += 1
+            self.proposal_seq = None
             await asyncio.sleep(1)
 
+        result['msec'] = int((time.time() - timestamp)*1000)
         result['log_id'] = log_id
         result['log_seq'] = log_seq
-        result['msec'] = int((time.time() - ts)*1000)
+        result['retries'] = count
+        self.proposal_seq = result['proposal_seq']
 
         return result
 
