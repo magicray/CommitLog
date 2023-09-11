@@ -118,6 +118,7 @@ def dump(path, *objects):
             fd.write(obj)
 
     os.replace(tmp, path)
+    # os.sync()
 
 
 def paxos_server(meta, data):
