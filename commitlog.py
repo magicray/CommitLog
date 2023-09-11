@@ -23,7 +23,7 @@ async def request_handler(reader, writer):
                     return writer.close()
 
                 req = req.decode().strip()
-                cmd, length, hdr = json.loads(req)
+                cmd, hdr, length = json.loads(req)
             except Exception:
                 log('{} disconnected or invalid header'.format(peer))
                 return writer.close()
@@ -41,7 +41,7 @@ async def request_handler(reader, writer):
                 status, hdr, data = 'EXCEPTION', str(e), None
 
             length = len(data) if data else 0
-            res = json.dumps([status, length, hdr])
+            res = json.dumps([status, hdr, length])
 
             writer.write(res.encode())
             writer.write(b'\n')
@@ -80,13 +80,13 @@ class RPC():
 
             length = len(data) if data else 0
 
-            writer.write(json.dumps([cmd, length, meta]).encode())
+            writer.write(json.dumps([cmd, meta, length]).encode())
             writer.write(b'\n')
             if length > 0:
                 writer.write(data)
             await writer.drain()
 
-            status, length, meta = json.loads(await reader.readline())
+            status, meta, length = json.loads(await reader.readline())
 
             return status, meta, await reader.readexactly(length)
         except (ConnectionRefusedError, ConnectionResetError):
@@ -207,8 +207,9 @@ class Client():
             if meta > proposal[0]:
                 proposal = [meta, data]
 
-        # This is the blob that should be written as the value
-        # of the log_seq with the latest proposal_seq
+        # This blob should be written again for this log_seq with this
+        # proposal_seq, as it might not have been successfully written
+        # on a quorum of nodes when last leader died or evicted.
         #
         # Returns - log_seq, proposal_seq, uuid, blob
         return proposal[0][0], proposal_seq, guid, proposal[1]
@@ -216,7 +217,7 @@ class Client():
     async def paxos_accept(self, log_id, proposal_seq, guid, log_seq, blob):
         meta = [log_id, proposal_seq, guid, log_seq]
 
-        for delay in (0.5, 0.5, 1, 1, 1, 2, 4, 0):
+        for delay in (0.5, 0.5, 1, 1, 1, 2, 2, 2, 0):
             res = await self.rpc('accept', meta, blob)
 
             if len(res) >= self.quorum:
@@ -226,6 +227,8 @@ class Client():
             await asyncio.sleep(delay)
 
     async def append(self, log_id, blob):
+        timestamp = time.time()
+
         if log_id not in self.logs:
             log_seq, proposal_seq, guid, old = await self.paxos_promise(log_id)
 
@@ -236,22 +239,31 @@ class Client():
                 # This instance is the new leader for this log -:)
                 self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
+                if not blob:
+                    return dict(log_id=log_id, log_seq=log_seq, blob=old,
+                                status='LEADER',
+                                msec=int((time.time() - timestamp) * 1000))
+
         if log_id not in self.logs:
-            return dict(log_id=log_id, status='ELECTION_FAILED')
+            return dict(log_id=log_id, status='NOT_LEADER',
+                        msec=int((time.time() - timestamp) * 1000))
 
         # Get the next log_seq and proposal_seq for this leader
         proposal_seq, guid, log_seq = self.logs[log_id]
 
-        ts = time.time()
         status = await self.paxos_accept(
             log_id, proposal_seq, guid, log_seq, blob)
-        msec = int((time.time() - ts) * 1000)
 
         if 'OK' == status:
             # Update the log_seq - value where next blob would be written
             self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
-        return dict(log_id=log_id, log_seq=log_seq, status=status, msec=msec)
+            return dict(log_id=log_id, log_seq=log_seq, blob=blob,
+                        status=status,
+                        msec=int((time.time() - timestamp) * 1000))
+
+        return dict(log_id=log_id, status='FAILED',
+                    msec=int((time.time() - timestamp) * 1000))
 
     async def tail(self, log_id, log_seq):
         pass
@@ -278,6 +290,7 @@ if '__main__' == __name__:
                 exit(0)
 
             result = loop.run_until_complete(client.append(sys.argv[-1], blob))
+            result.pop('blob')
             print(result)
 
             if 'OK' != result['status']:
