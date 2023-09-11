@@ -275,4 +275,4 @@ if '__main__' == __name__:
 
         print(result)
 
-        exit(0) if 'OK' == result['status'] is int else exit(1)
+        exit(0) if 'OK' == result['status'] else exit(1)
