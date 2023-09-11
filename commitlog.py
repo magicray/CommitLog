@@ -50,7 +50,8 @@ async def request_handler(reader, writer):
             log('{} {}:{} {} {} {} {}'.format(
                 peer, cmd, status, req_length, req_hdr, res_length, res_hdr))
         except Exception as e:
-            log('req{} {}'.format(peer, e))
+            traceback.print_exc()
+            log('req{} FATAL({})'.format(peer, e))
             os._exit(0)
 
 
@@ -119,7 +120,7 @@ def dump(path, *objects):
 
 
 def paxos_server(meta, data):
-    phase, log_id, proposal_seq, uuid = meta[0], meta[1], meta[2], meta[3]
+    phase, log_id, proposal_seq, guid = meta[0], meta[1], meta[2], meta[3]
 
     if os.path.dirname(log_id):
         return 'INVALID_LOG_ID', log_id, None
@@ -135,12 +136,15 @@ def paxos_server(meta, data):
     promised_seq = 0
     if os.path.isfile(promise_filepath):
         with open(promise_filepath) as fd:
-            promised_seq = json.load(fd)['promised_seq']
+            obj = json.load(fd)
+
+        uuid = obj['uuid']
+        promised_seq = obj['promised_seq']
 
     if 'promise' == phase and proposal_seq > promised_seq:
         # Accept this as the new leader. Any subsequent requests from
         # any stale, older leaders would be rejected
-        dump(promise_filepath, dict(promised_seq=proposal_seq, uuid=uuid))
+        dump(promise_filepath, dict(promised_seq=proposal_seq, uuid=guid))
 
         # Get max log_seq for this log_id
         # Traverse the three level directory hierarchy picking the highest
@@ -161,7 +165,7 @@ def paxos_server(meta, data):
 
         return 'OK', [0, 0], None
 
-    if 'accept' == phase and proposal_seq == promised_seq:
+    if 'accept' == phase and proposal_seq == promised_seq and guid == uuid:
         log_seq = meta[4]
 
         md5 = hashlib.md5(data).hexdigest()
@@ -175,7 +179,7 @@ def paxos_server(meta, data):
 
         return 'OK', len(data), None
 
-    return 'INVALID_PROPOSAL_SEQ', proposal_seq, str(promised_seq)
+    return 'INVALID_PROPOSAL_SEQ', proposal_seq, str(promised_seq).encode()
 
 
 class Client():
@@ -185,9 +189,10 @@ class Client():
         self.quorum = max(quorum, int(len(servers)/2) + 1)
 
     async def paxos_promise(self, log_id):
+        guid = str(uuid.uuid4())
         proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
-        meta = ['promise', log_id, proposal_seq, str(uuid.uuid4())]
+        meta = ['promise', log_id, proposal_seq, guid]
         res = await self.rpc('paxos', meta)
         if self.quorum > len(res):
             # Can't decide without hearing back from a quorum
@@ -203,44 +208,48 @@ class Client():
         # This is the blob that should be written as the value
         # of the log_seq with the latest proposal_seq
         #
-        # Returns - log_seq, proposal_seq, blob
-        return proposal[0][0], proposal_seq, proposal[1]
+        # Returns - log_seq, proposal_seq, uuid, blob
+        return proposal[0][0], proposal_seq, guid, proposal[1]
 
-    async def paxos_propose(self, log_id, proposal_seq, log_seq, blob):
-        meta = ['accept', log_id, proposal_seq, str(uuid.uuid4()), log_seq]
+    async def paxos_propose(self, log_id, proposal_seq, guid, log_seq, blob):
+        meta = ['accept', log_id, proposal_seq, guid, log_seq]
 
-        for i in range(5):
+        for delay in (0.5, 0.5, 1, 1, 1, 2, 4, 0):
             res = await self.rpc('paxos', meta, blob)
 
             if len(res) >= self.quorum:
                 # blob is successfully written to a quorum of servers
                 return 'OK'
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(delay)
 
     async def append(self, log_id, blob):
         if log_id not in self.logs:
-            log_seq, proposal_seq, old = await self.paxos_promise(log_id)
+            log_seq, proposal_seq, guid, old = await self.paxos_promise(log_id)
 
-            res = await self.paxos_propose(log_id, proposal_seq, log_seq, old)
+            res = await self.paxos_propose(
+                log_id, proposal_seq, guid, log_seq, old)
+
             if 'OK' == res:
                 # This instance is the new leader for this log -:)
-                self.logs[log_id] = [proposal_seq, log_seq+1]
+                self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
         if log_id not in self.logs:
             return dict(log_id=log_id, status='ELECTION_FAILED')
 
         # Get the next log_seq and proposal_seq for this leader
-        proposal_seq, log_seq = self.logs[log_id]
+        proposal_seq, guid, log_seq = self.logs[log_id]
 
-        timestamp = time.time()
-        status = await self.paxos_propose(log_id, proposal_seq, log_seq, blob)
+        ts = time.time()
+        status = await self.paxos_propose(
+            log_id, proposal_seq, guid, log_seq, blob)
+        msec = int((time.time() - ts) * 1000)
+
         if 'OK' == status:
             # Update the log_seq - value where next blob would be written
-            self.logs[log_id] = [proposal_seq, log_seq+1]
+            self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
-        return dict(msec=int((time.time() - timestamp)*1000),
-                    log_id=log_id, log_seq=log_seq, status=status)
+        return dict(log_id=log_id, log_seq=log_seq, status=status, msec=msec)
 
     async def tail(self, log_id, log_seq):
         pass
