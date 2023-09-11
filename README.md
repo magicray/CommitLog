@@ -1,6 +1,6 @@
 # CommitLog
-Persistent General Purpose Commit Log
+Replicated, persistent and Strongly consistent General Purpose Commit Log
 
 - Leaderless and highly available.
-- Paxos for replication.
-- Plain filesystem for data.
+- Multi Paxos for strongly consistent and fast replication.
+- Plain filesystem for persistence.
