@@ -263,16 +263,20 @@ async def run_server(port):
 
 if '__main__' == __name__:
     if len(sys.argv) < 3:
-        # Server
         logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
         asyncio.run(run_server(int(sys.argv[1])))
 
     else:
-        # CLI
-        result = asyncio.run(Client(sys.argv[1:-1]).append(
-            sys.argv[-1],
-            sys.stdin.buffer.read()))
+        loop = asyncio.get_event_loop()
+        client = Client(sys.argv[1:-1])
 
-        print(result)
+        while True:
+            blob = sys.stdin.buffer.read(1024*1024)
+            if not blob:
+                exit(0)
 
-        exit(0) if 'OK' == result['status'] else exit(1)
+            result = loop.run_until_complete(client.append(sys.argv[-1], blob))
+            print(result)
+
+            if 'OK' != result['status']:
+                exit(1)
