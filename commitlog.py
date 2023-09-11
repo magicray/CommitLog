@@ -11,47 +11,48 @@ from logging import critical as log
 
 
 async def request_handler(reader, writer):
-    HANDLERS = dict(paxos=paxos_server)
+    HANDLERS = dict(promise=paxos_server, accept=paxos_server)
 
     peer = writer.get_extra_info('socket').getpeername()
 
     while True:
         try:
             try:
-                line = await reader.readline()
-                if not line:
+                req = await reader.readline()
+                if not req:
                     return writer.close()
 
-                cmd, req_length, req_hdr = json.loads(line)
+                req = req.decode().strip()
+                cmd, length, hdr = json.loads(req)
             except Exception:
-                log('req{} disconnected or invalid header'.format(peer))
+                log('{} disconnected or invalid header'.format(peer))
                 return writer.close()
 
             if cmd not in HANDLERS:
-                log('req{} {} invalid command'.format(peer, cmd))
+                log('{} invalid command {}'.format(peer, req))
                 return writer.close()
 
             try:
-                status, res_hdr, data = HANDLERS[cmd](
-                    req_hdr,
-                    await reader.readexactly(req_length))
+                status, hdr, data = HANDLERS[cmd](
+                    hdr,
+                    await reader.readexactly(length))
             except Exception as e:
                 traceback.print_exc()
-                status, res_hdr, data = 'EXCEPTION', str(e), None
+                status, hdr, data = 'EXCEPTION', str(e), None
 
-            res_length = len(data) if data else 0
+            length = len(data) if data else 0
+            res = json.dumps([status, length, hdr])
 
-            writer.write(json.dumps([status, res_length, res_hdr]).encode())
+            writer.write(res.encode())
             writer.write(b'\n')
-            if res_length > 0:
+            if length > 0:
                 writer.write(data)
 
             await writer.drain()
-            log('{} {}:{} {} {} {} {}'.format(
-                peer, cmd, status, req_length, req_hdr, res_length, res_hdr))
+            log('{} {}:{} {} {}'.format(peer, cmd, status, req, res))
         except Exception as e:
             traceback.print_exc()
-            log('req{} FATAL({})'.format(peer, e))
+            log('{} FATAL({})'.format(peer, e))
             os._exit(0)
 
 
@@ -120,7 +121,8 @@ def dump(path, *objects):
 
 
 def paxos_server(meta, data):
-    phase, log_id, proposal_seq, guid = meta[0], meta[1], meta[2], meta[3]
+    phase = 'promise' if 3 == len(meta) else 'accept'
+    log_id, proposal_seq, guid = meta[0], meta[1], meta[2]
 
     if os.path.dirname(log_id):
         return 'INVALID_LOG_ID', log_id, None
@@ -166,7 +168,7 @@ def paxos_server(meta, data):
         return 'OK', [0, 0], None
 
     if 'accept' == phase and proposal_seq == promised_seq and guid == uuid:
-        log_seq = meta[4]
+        log_seq = meta[3]
 
         md5 = hashlib.md5(data).hexdigest()
         hdr = dict(log_id=log_id, log_seq=log_seq, md5=md5, length=len(data),
@@ -192,8 +194,8 @@ class Client():
         guid = str(uuid.uuid4())
         proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
-        meta = ['promise', log_id, proposal_seq, guid]
-        res = await self.rpc('paxos', meta)
+        meta = [log_id, proposal_seq, guid]
+        res = await self.rpc('promise', meta)
         if self.quorum > len(res):
             # Can't decide without hearing back from a quorum
             return 'NO_QUORUM'
@@ -212,10 +214,10 @@ class Client():
         return proposal[0][0], proposal_seq, guid, proposal[1]
 
     async def paxos_propose(self, log_id, proposal_seq, guid, log_seq, blob):
-        meta = ['accept', log_id, proposal_seq, guid, log_seq]
+        meta = [log_id, proposal_seq, guid, log_seq]
 
         for delay in (0.5, 0.5, 1, 1, 1, 2, 4, 0):
-            res = await self.rpc('paxos', meta, blob)
+            res = await self.rpc('accept', meta, blob)
 
             if len(res) >= self.quorum:
                 # blob is successfully written to a quorum of servers
