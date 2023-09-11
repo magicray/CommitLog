@@ -262,16 +262,17 @@ async def run_server(port):
 
 
 if '__main__' == __name__:
-    if 2 == len(sys.argv):
+    if len(sys.argv) < 3:
         # Server
         logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
         asyncio.run(run_server(int(sys.argv[1])))
 
-    elif 3 == len(sys.argv):
+    else:
         # CLI
-        client = Client(sys.argv[1].split(','))
+        result = asyncio.run(Client(sys.argv[1:-1]).append(
+            sys.argv[-1],
+            sys.stdin.buffer.read()))
 
-        r = asyncio.run(client.append(sys.argv[2], sys.stdin.buffer.read()))
-        print(r)
+        print(result)
 
-        exit(0) if 'OK' == r['status'] is int else exit(1)
+        exit(0) if 'OK' == result['status'] is int else exit(1)
