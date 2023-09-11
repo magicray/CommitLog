@@ -179,7 +179,7 @@ def paxos_server(meta, data):
 
         dump(path, hdr, b'\n', data)
 
-        return 'OK', len(data), None
+        return 'OK', md5, None
 
     return 'INVALID_PROPOSAL_SEQ', proposal_seq, str(promised_seq).encode()
 
@@ -213,7 +213,7 @@ class Client():
         # Returns - log_seq, proposal_seq, uuid, blob
         return proposal[0][0], proposal_seq, guid, proposal[1]
 
-    async def paxos_propose(self, log_id, proposal_seq, guid, log_seq, blob):
+    async def paxos_accept(self, log_id, proposal_seq, guid, log_seq, blob):
         meta = [log_id, proposal_seq, guid, log_seq]
 
         for delay in (0.5, 0.5, 1, 1, 1, 2, 4, 0):
@@ -229,7 +229,7 @@ class Client():
         if log_id not in self.logs:
             log_seq, proposal_seq, guid, old = await self.paxos_promise(log_id)
 
-            res = await self.paxos_propose(
+            res = await self.paxos_accept(
                 log_id, proposal_seq, guid, log_seq, old)
 
             if 'OK' == res:
@@ -243,7 +243,7 @@ class Client():
         proposal_seq, guid, log_seq = self.logs[log_id]
 
         ts = time.time()
-        status = await self.paxos_propose(
+        status = await self.paxos_accept(
             log_id, proposal_seq, guid, log_seq, blob)
         msec = int((time.time() - ts) * 1000)
 
