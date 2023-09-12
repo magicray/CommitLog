@@ -225,7 +225,9 @@ class Client():
 
             # blob is successfully written to a quorum of servers
             if len(res) >= self.quorum:
-                return True
+                checksums = set([meta for meta, data in res.values()])
+                if 1 == len(checksums):
+                    return checksums.pop()
 
             await asyncio.sleep(delay)
 
@@ -244,13 +246,13 @@ class Client():
 
             # This client is the leader now. Write the previous blob
             # as it is potentially not written to a quorum.
-            status = await self.paxos_accept(
+            md5 = await self.paxos_accept(
                 log_id, proposal_seq, guid, log_seq, old)
 
             # This client successfully wrote the blob. It is now the leader
             # and log stream is in a good state - with all blobs till log_seq
             # successfully written to a quorum.
-            if status is True:
+            if md5 is not None:
                 # Update log_seq to be used in the in the next append call.
                 self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
@@ -258,7 +260,7 @@ class Client():
                 # This call was just to make this client a leader -:)
                 if not blob:
                     return dict(status=True, log_seq=log_seq, blob=old,
-                                msec=int((time.time() - ts) * 1000))
+                                md5=md5, msec=int((time.time() - ts) * 1000))
 
         # This client either lost it's leadership status,
         # or could not become the new leader for this log_id.
@@ -276,18 +278,18 @@ class Client():
         proposal_seq, guid, log_seq = self.logs[log_id]
 
         # Try writing the blob to a quorum of servers
-        status = await self.paxos_accept(
+        md5 = await self.paxos_accept(
             log_id, proposal_seq, guid, log_seq, blob)
 
         # Write was not successful
-        if status is not True:
+        if md5 is None:
             return dict(status=False, msec=int((time.time() - ts) * 1000))
 
         # Update the log_seq - value where next blob would be written
         self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
         # All Good. Commit successful. Blob written to a quorum.
-        return dict(status=True, log_seq=log_seq, blob=blob,
+        return dict(status=True, log_seq=log_seq, blob=blob, md5=md5,
                     msec=int((time.time() - ts) * 1000))
 
     async def tail(self, log_id, log_seq):
@@ -301,8 +303,9 @@ async def run_server(port):
 
 
 if '__main__' == __name__:
+    logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
+
     if len(sys.argv) < 3:
-        logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
         asyncio.run(run_server(int(sys.argv[1])))
 
     else:
@@ -316,7 +319,7 @@ if '__main__' == __name__:
 
             result = loop.run_until_complete(client.append(sys.argv[-1], blob))
             result.pop('blob')
-            print(result)
+            log(result)
 
             if 'OK' != result['status']:
                 exit(1)
