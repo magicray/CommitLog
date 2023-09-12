@@ -195,11 +195,10 @@ class Client():
         guid = str(uuid.uuid4())
         proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
-        meta = [log_id, proposal_seq, guid]
-        res = await self.rpc('promise', meta)
+        res = await self.rpc('promise', [log_id, proposal_seq, guid])
         if self.quorum > len(res):
             # Can't decide without hearing back from a quorum
-            return 'NO_QUORUM'
+            return
 
         # Format = [[log_seq, accepted_seq], blob]
         proposal = [[0, 0], b'']
@@ -223,7 +222,7 @@ class Client():
 
             # blob is successfully written to a quorum of servers
             if len(res) >= self.quorum:
-                return 'OK'
+                return True
 
             await asyncio.sleep(delay)
 
@@ -231,37 +230,60 @@ class Client():
         ts = time.time()
 
         if log_id not in self.logs:
+            # Block any older leader from issuing new writes.
+            #
+            # Most recent write might be only partiall if the previous leader
+            # crashed or this node evicted it. To guarantee successful write
+            # of the most recent log_seq, we must issue a write again.
+            #
+            # This returns the latest log_seq and blob to enable the rewrite.
             log_seq, proposal_seq, guid, old = await self.paxos_promise(log_id)
 
+            # This client is the leader now. Write the previous blob
+            # as it is potentially not written to a quorum.
             status = await self.paxos_accept(
                 log_id, proposal_seq, guid, log_seq, old)
 
-            if 'OK' == status:
-                # This instance is the new leader for this log -:)
+            # This client successfully wrote the blob. It is now the leader
+            # and log stream is in a good state - with all blobs till log_seq
+            # successfully written to a quorum.
+            if status is True:
+                # Update log_seq to be used in the in the next append call.
                 self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
+                # Not blob to write.
+                # This call was just to make this client a leader -:)
                 if not blob:
                     return dict(status=True, log_seq=log_seq, blob=old,
                                 msec=int((time.time() - ts) * 1000))
 
+        # This client either lost it's leadership status,
+        # or could not become the new leader for this log_id.
         if log_id not in self.logs:
             return dict(status=False, msec=int((time.time() - ts) * 1000))
 
+        # No blob to write. Pretend success.
+        #
+        # But it indicates that this node is indeed a leader and blob
+        # would have been written successfully had we got a non empty blob.
         if not blob:
             return dict(status=True, msec=int((time.time() - ts) * 1000))
 
         # Get the next log_seq and proposal_seq for this leader
         proposal_seq, guid, log_seq = self.logs[log_id]
 
+        # Try writing the blob to a quorum of servers
         status = await self.paxos_accept(
             log_id, proposal_seq, guid, log_seq, blob)
 
-        if 'OK' != status:
+        # Write was not successful
+        if status is not True:
             return dict(status=False, msec=int((time.time() - ts) * 1000))
 
         # Update the log_seq - value where next blob would be written
         self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
+        # All Good. Commit successful. Blob written to a quorum.
         return dict(status=True, log_seq=log_seq, blob=blob,
                     msec=int((time.time() - ts) * 1000))
 
