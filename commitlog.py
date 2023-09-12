@@ -106,8 +106,6 @@ class RPC():
 
 
 def dump(path, *objects):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
     with open('tmp', 'wb') as fd:
         for obj in objects:
             if type(obj) is not bytes:
@@ -115,6 +113,7 @@ def dump(path, *objects):
 
             fd.write(obj)
 
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     os.replace('tmp', path)
 
 
@@ -284,20 +283,15 @@ class Client():
         pass
 
 
-async def run_server(port):
-    server = await asyncio.start_server(request_handler, None, port)
-    async with server:
-        await server.serve_forever()
-
-
-if '__main__' == __name__:
+async def main():
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
     if len(sys.argv) < 3:
-        asyncio.run(run_server(int(sys.argv[1])))
+        s = await asyncio.start_server(request_handler, None, int(sys.argv[1]))
+        async with s:
+            await s.serve_forever()
 
     else:
-        loop = asyncio.get_event_loop()
         client = Client(sys.argv[1:-1])
 
         while True:
@@ -305,8 +299,12 @@ if '__main__' == __name__:
             if not blob:
                 exit(0)
 
-            result = loop.run_until_complete(client.append(sys.argv[-1], blob))
+            result = await client.append(sys.argv[-1], blob)
             log(result)
 
             if result['status'] is not True:
                 exit(1)
+
+
+if '__main__' == __name__:
+    asyncio.run(main())
