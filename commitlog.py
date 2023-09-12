@@ -146,10 +146,8 @@ def paxos_server(meta, data):
         dump(promise_filepath, dict(promised_seq=proposal_seq, uuid=guid))
         os.sync()
 
-        with open(promise_filepath) as fd:
-            obj = json.load(fd)
-            uuid = obj['uuid']
-            promised_seq = obj['promised_seq']
+        uuid = guid
+        promised_seq = proposal_seq
 
     if 'promise' == phase and proposal_seq == promised_seq and guid == uuid:
         # Get max log_seq for this log_id
@@ -200,7 +198,6 @@ class Client():
 
         res = await self.rpc('promise', [log_id, proposal_seq, guid])
         if self.quorum > len(res):
-            # Can't decide without hearing back from a quorum
             return
 
         # Format = [[log_seq, accepted_seq], blob]
@@ -212,7 +209,7 @@ class Client():
 
         # This blob should be written again for this log_seq with this
         # proposal_seq, as it might not have been successfully written
-        # on a quorum of nodes when last leader died or evicted.
+        # on a quorum of nodes when last leader died or was evicted.
         #
         # Returns - log_seq, proposal_seq, uuid, blob
         return proposal[0][0], proposal_seq, guid, proposal[1]
@@ -237,62 +234,49 @@ class Client():
         if log_id not in self.logs:
             # Block any older leader from issuing new writes.
             #
-            # Most recent write might be only partiall if the previous leader
-            # crashed or this node evicted it. To guarantee successful write
-            # of the most recent log_seq, we must issue a write again.
-            #
-            # This returns the latest log_seq and blob to enable the rewrite.
+            # Last write from the previous leader might have failed.
+            # This client should complete that before any new writes.
             result = await self.paxos_promise(log_id)
             if result is None:
                 return dict(status=False, msec=int((time.time() - ts) * 1000))
 
+            # Latest log_seq and blob to complete the write.
             log_seq, proposal_seq, guid, old = result
 
-            # This client is the leader now. Write the previous blob
-            # as it is potentially not written to a quorum.
+            # Finish the previous write
             md5 = await self.paxos_accept(
                 log_id, proposal_seq, guid, log_seq, old)
 
-            # This client successfully wrote the blob. It is now the leader
-            # and log stream is in a good state - with all blobs till log_seq
-            # successfully written to a quorum.
-            if md5 is not None:
-                # Update log_seq to be used in the in the next append call.
-                self.logs[log_id] = [proposal_seq, guid, log_seq+1]
+            if md5 is None:
+                return dict(status=False, msec=int((time.time() - ts) * 1000))
 
-                # Not blob to write.
-                # This call was just to make this client a leader -:)
-                if not blob:
-                    return dict(status=True, log_seq=log_seq, md5=md5,
-                                msec=int((time.time() - ts) * 1000))
+            # Write successfuly completed. Log stream is in a good state.
+            # Next log would be written at log_seq+1
+            # This client is THE LEADER now.
+            self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
-        # This client either lost it's leadership status,
-        # or could not become the new leader for this log_id.
-        if log_id not in self.logs:
-            return dict(status=False, msec=int((time.time() - ts) * 1000))
+            if not blob:
+                # This call was just to make this client a leader
+                # Return the last blob so that caller can update its state.
+                return dict(status=True, log_seq=log_seq, blob=old,
+                            md5=md5, msec=int((time.time() - ts) * 1000))
 
-        # No blob to write. Pretend success.
-        #
-        # But it indicates that this node is indeed a leader and blob
-        # would have been written successfully had we got a non empty blob.
         if not blob:
+            # Caller just checking if this client is a leader.
             return dict(status=True, msec=int((time.time() - ts) * 1000))
 
-        # Get the next log_seq and proposal_seq for this leader
-        proposal_seq, guid, log_seq = self.logs[log_id]
+        # Take away leadership temporarily.
+        proposal_seq, guid, log_seq = self.logs.pop(log_id)
 
-        # Try writing the blob to a quorum of servers
         md5 = await self.paxos_accept(
             log_id, proposal_seq, guid, log_seq, blob)
 
-        # Write was not successful
         if md5 is None:
             return dict(status=False, msec=int((time.time() - ts) * 1000))
 
-        # Update the log_seq - value where next blob would be written
+        # All Good. Commit successful. Reinstate as the leader.
         self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
-        # All Good. Commit successful. Blob written to a quorum.
         return dict(status=True, log_seq=log_seq, md5=md5,
                     msec=int((time.time() - ts) * 1000))
 
