@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import hashlib
 
 
@@ -13,25 +14,29 @@ def main(log_id):
         l1, l2, = log_seq//1000000, log_seq//1000
         path = os.path.join(logdir, str(l1), str(l2), str(log_seq))
 
-        checksums = dict()
+        headers = list()
         for i in range(1, 6):
             p = os.path.join(str(i), path)
             if os.path.isfile(p):
-                with open(p, 'rb') as fd:
-                    md5 = hashlib.md5(fd.read()).hexdigest()
-                    checksums.setdefault(md5, 0)
-                    checksums[md5] += 1
+                with open(p) as fd:
+                    headers.append(json.loads(fd.readline()))
 
-        if not checksums:
+        if not headers:
             return
 
-        counts = sorted([(v, k) for k, v in checksums.items()])
-        count, md5 = counts[-1][0], counts[-1][1]
+        accepted_seq = max([h['accepted_seq'] for h in headers])
+        valid = [h for h in headers if h['accepted_seq'] == accepted_seq]
 
-        if count < 3:
+        if len(valid) < 3:
             return
 
-        print('{} {} {}'.format(log_seq, count, md5))
+        first = valid[0]
+        for v in valid:
+            for k in first:
+                if v[k] != first[k]:
+                    return
+
+        print((len(valid), first))
 
         log_seq += 1
 
