@@ -220,7 +220,7 @@ class Client():
     async def paxos_accept(self, log_id, proposal_seq, guid, log_seq, blob):
         meta = [log_id, proposal_seq, guid, log_seq]
 
-        for delay in (0.5, 0.5, 1, 1, 1, 2, 2, 2, 0):
+        for delay in (1, 1, 1, 1, 1, 0):
             res = await self.rpc('accept', meta, blob)
 
             # blob is successfully written to a quorum of servers
@@ -263,8 +263,8 @@ class Client():
                 # Not blob to write.
                 # This call was just to make this client a leader -:)
                 if not blob:
-                    return dict(status=True, log_seq=log_seq, blob=old,
-                                md5=md5, msec=int((time.time() - ts) * 1000))
+                    return dict(status=True, log_seq=log_seq, md5=md5,
+                                msec=int((time.time() - ts) * 1000))
 
         # This client either lost it's leadership status,
         # or could not become the new leader for this log_id.
@@ -293,7 +293,7 @@ class Client():
         self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
         # All Good. Commit successful. Blob written to a quorum.
-        return dict(status=True, log_seq=log_seq, blob=blob, md5=md5,
+        return dict(status=True, log_seq=log_seq, md5=md5,
                     msec=int((time.time() - ts) * 1000))
 
     async def tail(self, log_id, log_seq):
@@ -322,8 +322,7 @@ if '__main__' == __name__:
                 exit(0)
 
             result = loop.run_until_complete(client.append(sys.argv[-1], blob))
-            result.pop('blob', None)
             log(result)
 
-            if 'OK' != result['status']:
+            if result['status'] is not True:
                 exit(1)
