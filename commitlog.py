@@ -242,7 +242,11 @@ class Client():
             # of the most recent log_seq, we must issue a write again.
             #
             # This returns the latest log_seq and blob to enable the rewrite.
-            log_seq, proposal_seq, guid, old = await self.paxos_promise(log_id)
+            result = await self.paxos_promise(log_id)
+            if result is None:
+                return dict(status=False, msec=int((time.time() - ts) * 1000))
+
+            log_seq, proposal_seq, guid, old = result
 
             # This client is the leader now. Write the previous blob
             # as it is potentially not written to a quorum.
@@ -318,7 +322,7 @@ if '__main__' == __name__:
                 exit(0)
 
             result = loop.run_until_complete(client.append(sys.argv[-1], blob))
-            result.pop('blob')
+            result.pop('blob', None)
             log(result)
 
             if 'OK' != result['status']:
