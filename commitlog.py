@@ -33,9 +33,8 @@ async def request_handler(reader, writer):
                 return writer.close()
 
             try:
-                status, hdr, data = HANDLERS[cmd](
-                    hdr,
-                    await reader.readexactly(length))
+                result = HANDLERS[cmd](hdr, await reader.readexactly(length))
+                status, hdr, data = list(result) + [None] * (3 - len(result))
             except Exception as e:
                 traceback.print_exc()
                 status, hdr, data = 'EXCEPTION', str(e), None
@@ -109,15 +108,14 @@ class RPC():
 def dump(path, *objects):
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
-    tmp = path + '.' + str(uuid.uuid4()) + '.tmp'
-    with open(tmp, 'wb') as fd:
+    with open('tmp', 'wb') as fd:
         for obj in objects:
             if type(obj) is not bytes:
                 obj = json.dumps(obj, sort_keys=True).encode()
 
             fd.write(obj)
 
-    os.replace(tmp, path)
+    os.replace('tmp', path)
 
 
 def paxos_server(meta, data):
@@ -125,7 +123,7 @@ def paxos_server(meta, data):
     log_id, proposal_seq, guid = meta[0], meta[1], meta[2]
 
     if os.path.dirname(log_id):
-        return 'INVALID_LOG_ID', log_id, None
+        return 'INVALID_LOG_ID', log_id
 
     # Directory for this log_id
     h = hashlib.sha256(log_id.encode()).hexdigest()
@@ -142,9 +140,9 @@ def paxos_server(meta, data):
             uuid = obj['uuid']
             promised_seq = obj['promised_seq']
 
+    # Accept this as the new leader. Any subsequent requests from
+    # any stale, older leaders would be rejected
     if proposal_seq > promised_seq:
-        # Accept this as the new leader. Any subsequent requests from
-        # any stale, older leaders would be rejected
         dump(promise_filepath, dict(promised_seq=proposal_seq, uuid=guid))
         os.sync()
 
@@ -171,7 +169,7 @@ def paxos_server(meta, data):
                         seq = json.loads(fd.readline())['accepted_seq']
                         return 'OK', [f, seq], fd.read()
 
-        return 'OK', [0, 0], None
+        return 'OK', [0, 0]
 
     if 'accept' == phase and proposal_seq == promised_seq and guid == uuid:
         log_seq = meta[3]
@@ -185,9 +183,9 @@ def paxos_server(meta, data):
 
         dump(path, hdr, b'\n', data)
 
-        return 'OK', md5, None
+        return 'OK', md5
 
-    return 'INVALID_PROPOSAL_SEQ', proposal_seq, str(promised_seq).encode()
+    return 'STALE_PROPOSAL_SEQ', proposal_seq
 
 
 class Client():
