@@ -25,11 +25,11 @@ async def request_handler(reader, writer):
                 req = req.decode().strip()
                 cmd, hdr, length = json.loads(req)
             except Exception:
-                log('{} disconnected or invalid header'.format(peer))
+                log(f'{peer} disconnected or invalid header')
                 return writer.close()
 
             if cmd not in HANDLERS:
-                log('{} invalid command {}'.format(peer, req))
+                log(f'{peer} invalid command {req}')
                 return writer.close()
 
             try:
@@ -49,10 +49,10 @@ async def request_handler(reader, writer):
                 writer.write(data)
 
             await writer.drain()
-            log('{} {}:{} {} {}'.format(peer, cmd, status, req, res))
+            log(f'{peer} {cmd}:{status} {req} {res}')
         except Exception as e:
             traceback.print_exc()
-            log('{} FATAL({})'.format(peer, e))
+            log(f'{peer} FATAL({e})')
             os._exit(0)
 
 
@@ -118,7 +118,6 @@ def dump(path, *objects):
             fd.write(obj)
 
     os.replace(tmp, path)
-    # os.sync()
 
 
 def paxos_server(meta, data):
@@ -148,6 +147,7 @@ def paxos_server(meta, data):
         # Accept this as the new leader. Any subsequent requests from
         # any stale, older leaders would be rejected
         dump(promise_filepath, dict(promised_seq=proposal_seq, uuid=guid))
+        os.sync()
 
         # Get max log_seq for this log_id
         # Traverse the three level directory hierarchy picking the highest
@@ -221,33 +221,34 @@ class Client():
         for delay in (0.5, 0.5, 1, 1, 1, 2, 2, 2, 0):
             res = await self.rpc('accept', meta, blob)
 
+            # blob is successfully written to a quorum of servers
             if len(res) >= self.quorum:
-                # blob is successfully written to a quorum of servers
                 return 'OK'
 
             await asyncio.sleep(delay)
 
     async def append(self, log_id, blob):
-        timestamp = time.time()
+        ts = time.time()
 
         if log_id not in self.logs:
             log_seq, proposal_seq, guid, old = await self.paxos_promise(log_id)
 
-            res = await self.paxos_accept(
+            status = await self.paxos_accept(
                 log_id, proposal_seq, guid, log_seq, old)
 
-            if 'OK' == res:
+            if 'OK' == status:
                 # This instance is the new leader for this log -:)
                 self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
                 if not blob:
-                    return dict(log_id=log_id, log_seq=log_seq, blob=old,
-                                status='LEADER',
-                                msec=int((time.time() - timestamp) * 1000))
+                    return dict(status=True, log_seq=log_seq, blob=old,
+                                msec=int((time.time() - ts) * 1000))
 
         if log_id not in self.logs:
-            return dict(log_id=log_id, status='NOT_LEADER',
-                        msec=int((time.time() - timestamp) * 1000))
+            return dict(status=False, msec=int((time.time() - ts) * 1000))
+
+        if not blob:
+            return dict(status=True, msec=int((time.time() - ts) * 1000))
 
         # Get the next log_seq and proposal_seq for this leader
         proposal_seq, guid, log_seq = self.logs[log_id]
@@ -255,16 +256,14 @@ class Client():
         status = await self.paxos_accept(
             log_id, proposal_seq, guid, log_seq, blob)
 
-        if 'OK' == status:
-            # Update the log_seq - value where next blob would be written
-            self.logs[log_id] = [proposal_seq, guid, log_seq+1]
+        if 'OK' != status:
+            return dict(status=False, msec=int((time.time() - ts) * 1000))
 
-            return dict(log_id=log_id, log_seq=log_seq, blob=blob,
-                        status=status,
-                        msec=int((time.time() - timestamp) * 1000))
+        # Update the log_seq - value where next blob would be written
+        self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
-        return dict(log_id=log_id, status='FAILED',
-                    msec=int((time.time() - timestamp) * 1000))
+        return dict(status=True, log_seq=log_seq, blob=blob,
+                    msec=int((time.time() - ts) * 1000))
 
     async def tail(self, log_id, log_seq):
         pass
