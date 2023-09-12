@@ -139,16 +139,21 @@ def paxos_server(meta, data):
     if os.path.isfile(promise_filepath):
         with open(promise_filepath) as fd:
             obj = json.load(fd)
+            uuid = obj['uuid']
+            promised_seq = obj['promised_seq']
 
-        uuid = obj['uuid']
-        promised_seq = obj['promised_seq']
-
-    if 'promise' == phase and proposal_seq > promised_seq:
+    if proposal_seq > promised_seq:
         # Accept this as the new leader. Any subsequent requests from
         # any stale, older leaders would be rejected
         dump(promise_filepath, dict(promised_seq=proposal_seq, uuid=guid))
         os.sync()
 
+        with open(promise_filepath) as fd:
+            obj = json.load(fd)
+            uuid = obj['uuid']
+            promised_seq = obj['promised_seq']
+
+    if 'promise' == phase and proposal_seq == promised_seq and guid == uuid:
         # Get max log_seq for this log_id
         # Traverse the three level directory hierarchy picking the highest
         # numbered dir/file at each level
@@ -172,8 +177,8 @@ def paxos_server(meta, data):
         log_seq = meta[3]
 
         md5 = hashlib.md5(data).hexdigest()
-        hdr = dict(log_id=log_id, log_seq=log_seq, md5=md5, length=len(data),
-                   uuid=uuid, accepted_seq=proposal_seq)
+        hdr = dict(log_id=log_id, log_seq=log_seq, accepted_seq=proposal_seq,
+                   md5=md5, uuid=uuid, length=len(data))
 
         l1, l2, = log_seq//1000000, log_seq//1000
         path = os.path.join(logdir, str(l1), str(l2), str(log_seq))
