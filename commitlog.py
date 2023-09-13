@@ -107,7 +107,8 @@ class RPC():
 
 
 def dump(path, *objects):
-    with open('tmp', 'wb') as fd:
+    tmp = path + '.' + str(uuid.uuid4()) + '.tmp'
+    with open(tmp, 'wb') as fd:
         for obj in objects:
             if type(obj) is not bytes:
                 obj = json.dumps(obj, sort_keys=True).encode()
@@ -115,7 +116,7 @@ def dump(path, *objects):
             fd.write(obj)
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    os.replace('tmp', path)
+    os.replace(tmp, path)
 
 
 def max_file(log_id):
@@ -190,11 +191,9 @@ def paxos_server(meta, data):
     # Accept this as the new leader. Any subsequent requests from
     # any stale, older leaders would be rejected
     if proposal_seq > promised_seq:
-        dump(promise_filepath, dict(promised_seq=proposal_seq, uuid=guid))
-        os.sync()
-
         uuid = guid
         promised_seq = proposal_seq
+        dump(promise_filepath, dict(promised_seq=proposal_seq, uuid=guid))
 
     if 'promise' == phase and proposal_seq == promised_seq and guid == uuid:
         log_seq, filepath = max_file(log_id)
