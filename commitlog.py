@@ -10,10 +10,9 @@ import traceback
 from logging import critical as log
 
 
-async def request_handler(reader, writer):
+async def server(reader, writer):
     HANDLERS = dict(promise=paxos_server, accept=paxos_server,
-                    logseq=logseq_server,
-                    meta=file_meta_server, data=file_data_server)
+                    logseq=logseq_server, read=read_server)
 
     peer = writer.get_extra_info('socket').getpeername()
 
@@ -140,37 +139,28 @@ def max_file(log_id):
     return 0, None
 
 
-def log_filepath(log_id, log_seq):
-    h = hashlib.sha256(log_id.encode()).hexdigest()
-    logdir = os.path.join('logs', h[0:3], h[3:6], log_id)
-
-    l1, l2, = log_seq//1000000, log_seq//1000
-    return os.path.join(logdir, str(l1), str(l2), str(log_seq))
-
-
 def logseq_server(meta, data):
-    log_seq, filepath = max_file(meta)
-
-    return 'OK', log_seq
+    return 'OK', max_file(meta)[0]
 
 
-def file_meta_server(meta, data):
-    path = log_filepath(meta[0], meta[1])
+def read_server(meta, data):
+    what, log_id, log_seq = meta
 
-    if os.path.isfile(path):
-        with open(path, 'rb') as fd:
-            return 'OK', json.loads(fd.readline())
+    h = hashlib.sha256(log_id.encode()).hexdigest()
+    l1, l2, = log_seq//1000000, log_seq//1000
 
-    return 'NOTFOUND'
-
-
-def file_data_server(meta, data):
-    path = log_filepath(meta[0], meta[1])
+    path = os.path.join(
+        'logs', h[0:3], h[3:6], log_id,
+        str(l1), str(l2), str(log_seq))
 
     if os.path.isfile(path):
         with open(path, 'rb') as fd:
             meta = json.loads(fd.readline())
-            return 'OK', meta, fd.read()
+
+            if 'data' == what:
+                return 'OK', meta, fd.read()
+
+            return 'OK', meta
 
     return 'NOTFOUND'
 
@@ -239,93 +229,73 @@ class Client():
         self.logs = dict()
         self.quorum = max(quorum, int(len(servers)/2) + 1)
 
-    async def paxos_promise(self, log_id):
-        guid = str(uuid.uuid4())
-        proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
-
-        res = await self.rpc('promise', [log_id, proposal_seq, guid])
-        if self.quorum > len(res):
-            return
-
-        # Format = [[log_seq, accepted_seq], blob]
-        proposal = [[0, 0], b'']
-
-        for meta, data in res.values():
-            if meta > proposal[0]:
-                proposal = [meta, data]
-
-        # This blob should be written again for this log_seq with this
-        # proposal_seq, as it might not have been successfully written
-        # on a quorum of nodes when last leader died or was evicted.
-        #
-        # Returns - log_seq, proposal_seq, uuid, blob
-        return proposal[0][0], proposal_seq, guid, proposal[1]
-
-    async def paxos_accept(self, log_id, proposal_seq, guid, log_seq, blob):
-        meta = [log_id, proposal_seq, guid, log_seq]
-
-        for delay in (1, 1, 1, 1, 1, 0):
-            res = await self.rpc('accept', meta, blob)
-
-            # blob is successfully written to a quorum of servers
-            if len(res) >= self.quorum:
-                checksums = set([meta for meta, data in res.values()])
-                if 1 == len(checksums):
-                    return checksums.pop()
-
-            await asyncio.sleep(delay)
-
     async def append(self, log_id, blob):
         ts = time.time()
 
         if log_id not in self.logs:
-            # Block any older leader from issuing new writes.
-            #
+            # paxos PROMISE phase - block stale leaders from writing
+            guid = str(uuid.uuid4())
+            proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
+
+            res = await self.rpc('promise', [log_id, proposal_seq, guid])
+            if self.quorum > len(res):
+                return dict(status=False, msec=int((time.time() - ts) * 1000))
+
+            # Format = [[log_seq, accepted_seq], blob]
+            proposal = [[0, 0], b'']
+            for meta, data in res.values():
+                if meta > proposal[0]:
+                    proposal = [meta, data]
+
+            # paxos ACCEPT phase - Write the latest value retrieved earlier
             # Last write from the previous leader might have failed.
             # This client should complete that before any new writes.
-            result = await self.paxos_promise(log_id)
-            if result is None:
+            log_seq, data = proposal[0][0], proposal[1]
+
+            meta = [log_id, proposal_seq, guid, proposal[0][0]]
+            res = await self.rpc('accept', meta, data)
+            if self.quorum > len(res):
                 return dict(status=False, msec=int((time.time() - ts) * 1000))
 
-            # Latest log_seq and blob to complete the write.
-            log_seq, proposal_seq, guid, old = result
-
-            # Finish the previous write
-            md5 = await self.paxos_accept(
-                log_id, proposal_seq, guid, log_seq, old)
-
-            if md5 is None:
+            md5 = set([meta for meta, data in res.values()])
+            if 1 != len(md5):
                 return dict(status=False, msec=int((time.time() - ts) * 1000))
 
-            # Write successfuly completed. Log stream is in a good state.
-            # Next log would be written at log_seq+1
-            # This client is THE LEADER now.
+            # This client is THE LEADER now
+            # Write successfuly completed. Set next log_seq = log_seq + 1
             self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
             if not blob:
-                # This call was just to make this client a leader
-                # Return the last blob so that caller can update its state.
-                return dict(status=True, log_seq=log_seq, blob=old,
-                            md5=md5, msec=int((time.time() - ts) * 1000))
+                return dict(status=True, log_seq=log_seq, md5=md5.pop(),
+                            msec=int((time.time() - ts) * 1000))
 
         if not blob:
-            # Caller just checking if this client is a leader.
             return dict(status=True, msec=int((time.time() - ts) * 1000))
 
         # Take away leadership temporarily.
         proposal_seq, guid, log_seq = self.logs.pop(log_id)
 
-        md5 = await self.paxos_accept(
-            log_id, proposal_seq, guid, log_seq, blob)
+        # Write the blob. Retry a few times to overcome temp failures
+        for delay in (1, 1, 1, 1, 1, 0):
+            meta = [log_id, proposal_seq, guid, log_seq]
+            res = await self.rpc('accept', meta, data)
 
-        if md5 is None:
-            return dict(status=False, msec=int((time.time() - ts) * 1000))
+            if self.quorum > len(res):
+                await asyncio.sleep(delay)
+                continue
+            else:
+                md5 = set([meta for meta, data in res.values()])
+                if 1 != len(md5):
+                    await asyncio.sleep(delay)
+                    continue
 
-        # All Good. Commit successful. Reinstate as the leader.
-        self.logs[log_id] = [proposal_seq, guid, log_seq+1]
+                # Commit successful. Reinstate as the leader.
+                self.logs[log_id] = [proposal_seq, guid, log_seq+1]
 
-        return dict(status=True, log_seq=log_seq, md5=md5,
-                    msec=int((time.time() - ts) * 1000))
+                return dict(status=True, log_seq=log_seq, md5=md5.pop(),
+                            msec=int((time.time() - ts) * 1000))
+
+        return dict(status=False, msec=int((time.time() - ts) * 1000))
 
     async def tail(self, log_id, start_seq, wait_sec=1):
         while True:
@@ -341,7 +311,7 @@ class Client():
 
             for seq in range(start_seq, max_seq):
                 while True:
-                    res = await self.rpc('meta', [log_id, seq])
+                    res = await self.rpc('read', ['meta', log_id, seq])
                     if self.quorum > len(res):
                         await asyncio.sleep(wait_sec)
                         continue
@@ -353,7 +323,8 @@ class Client():
                             srv = server
                             accepted_seq = res[0]['accepted_seq']
 
-                    res = await self.rpc('data', [log_id, seq], server=srv)
+                    res = await self.rpc('read', ['data', log_id, seq],
+                                         server=srv)
                     if not res:
                         await asyncio.sleep(wait_sec)
                         continue
@@ -367,9 +338,9 @@ async def main():
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
     if len(sys.argv) < 3:
-        s = await asyncio.start_server(request_handler, None, int(sys.argv[1]))
-        async with s:
-            await s.serve_forever()
+        srv = await asyncio.start_server(server, None, int(sys.argv[1]))
+        async with srv:
+            await srv.serve_forever()
 
     elif sys.argv[-1].isdigit():
         client = Client(sys.argv[1:-2])
