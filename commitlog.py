@@ -107,6 +107,8 @@ class RPC():
 
 
 def dump(path, *objects):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
     tmp = path + '.' + str(uuid.uuid4()) + '.tmp'
     with open(tmp, 'wb') as fd:
         for obj in objects:
@@ -115,7 +117,6 @@ def dump(path, *objects):
 
             fd.write(obj)
 
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     os.replace(tmp, path)
 
 
