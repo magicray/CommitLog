@@ -11,7 +11,9 @@ from logging import critical as log
 
 
 async def request_handler(reader, writer):
-    HANDLERS = dict(promise=paxos_server, accept=paxos_server)
+    HANDLERS = dict(promise=paxos_server, accept=paxos_server,
+                    logseq=logseq_server,
+                    meta=file_meta_server, data=file_data_server)
 
     peer = writer.get_extra_info('socket').getpeername()
 
@@ -94,8 +96,8 @@ class RPC():
 
             self.conns[server] = None, None, None
 
-    async def __call__(self, cmd, meta=None, data=b''):
-        servers = self.conns.keys()
+    async def __call__(self, cmd, meta=None, data=b'', server=None):
+        servers = self.conns.keys() if server is None else [server]
 
         res = await asyncio.gather(
             *[self._rpc(s, cmd, meta, data) for s in servers],
@@ -115,6 +117,62 @@ def dump(path, *objects):
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     os.replace('tmp', path)
+
+
+def max_file(log_id):
+    # Directory for this log_id
+    h = hashlib.sha256(log_id.encode()).hexdigest()
+    logdir = os.path.join('logs', h[0:3], h[3:6], log_id)
+
+    # Get max log_seq for this log_id
+    # Traverse the three level directory hierarchy picking the highest
+    # numbered dir/file at each level
+    l1_dirs = [int(f) for f in os.listdir(logdir) if f.isdigit()]
+    for l1 in sorted(l1_dirs, reverse=True):
+        l2_dirname = os.path.join(logdir, str(l1))
+        l2_dirs = [int(f) for f in os.listdir(l2_dirname) if f.isdigit()]
+        for l2 in sorted(l2_dirs, reverse=True):
+            l3_dirname = os.path.join(l2_dirname, str(l2))
+            files = [int(f) for f in os.listdir(l3_dirname) if f.isdigit()]
+            for f in sorted(files, reverse=True):
+                return f, os.path.join(l3_dirname, str(f))
+
+    return 0, None
+
+
+def log_filepath(log_id, log_seq):
+    h = hashlib.sha256(log_id.encode()).hexdigest()
+    logdir = os.path.join('logs', h[0:3], h[3:6], log_id)
+
+    l1, l2, = log_seq//1000000, log_seq//1000
+    return os.path.join(logdir, str(l1), str(l2), str(log_seq))
+
+
+def logseq_server(meta, data):
+    log_seq, filepath = max_file(meta)
+
+    return 'OK', log_seq
+
+
+def file_meta_server(meta, data):
+    path = log_filepath(meta[0], meta[1])
+
+    if os.path.isfile(path):
+        with open(path, 'rb') as fd:
+            return 'OK', json.loads(fd.readline())
+
+    return 'NOTFOUND'
+
+
+def file_data_server(meta, data):
+    path = log_filepath(meta[0], meta[1])
+
+    if os.path.isfile(path):
+        with open(path, 'rb') as fd:
+            meta = json.loads(fd.readline())
+            return 'OK', meta, fd.read()
+
+    return 'NOTFOUND'
 
 
 def paxos_server(meta, data):
@@ -149,24 +207,14 @@ def paxos_server(meta, data):
         promised_seq = proposal_seq
 
     if 'promise' == phase and proposal_seq == promised_seq and guid == uuid:
-        # Get max log_seq for this log_id
-        # Traverse the three level directory hierarchy picking the highest
-        # numbered dir/file at each level
-        l1_dirs = [int(f) for f in os.listdir(logdir) if f.isdigit()]
-        for l1 in sorted(l1_dirs, reverse=True):
-            l2_dirname = os.path.join(logdir, str(l1))
-            l2_dirs = [int(f) for f in os.listdir(l2_dirname) if f.isdigit()]
-            for l2 in sorted(l2_dirs, reverse=True):
-                l3_dirname = os.path.join(l2_dirname, str(l2))
-                files = [int(f) for f in os.listdir(l3_dirname) if f.isdigit()]
-                for f in sorted(files, reverse=True):
-                    log_file = os.path.join(l3_dirname, str(f))
+        log_seq, filepath = max_file(log_id)
 
-                    with open(log_file, 'rb') as fd:
-                        seq = json.loads(fd.readline())['accepted_seq']
-                        return 'OK', [f, seq], fd.read()
+        if 0 == log_seq:
+            return 'OK', [0, 0]
 
-        return 'OK', [0, 0]
+        with open(filepath, 'rb') as fd:
+            accepted_seq = json.loads(fd.readline())['accepted_seq']
+            return 'OK', [log_seq, accepted_seq], fd.read()
 
     if 'accept' == phase and proposal_seq == promised_seq and guid == uuid:
         log_seq = meta[3]
@@ -279,8 +327,40 @@ class Client():
         return dict(status=True, log_seq=log_seq, md5=md5,
                     msec=int((time.time() - ts) * 1000))
 
-    async def tail(self, log_id, log_seq):
-        pass
+    async def tail(self, log_id, start_seq, wait_sec=1):
+        while True:
+            res = await self.rpc('logseq', log_id)
+            if self.quorum > len(res):
+                await asyncio.sleep(wait_sec)
+                continue
+
+            max_seq = max([v[0] for v in res.values()])
+            if max_seq <= start_seq:
+                await asyncio.sleep(wait_sec)
+                continue
+
+            for seq in range(start_seq, max_seq):
+                while True:
+                    res = await self.rpc('meta', [log_id, seq])
+                    if self.quorum > len(res):
+                        await asyncio.sleep(wait_sec)
+                        continue
+
+                    srv = None
+                    accepted_seq = 0
+                    for server, res in res.items():
+                        if res[0]['accepted_seq'] > accepted_seq:
+                            srv = server
+                            accepted_seq = res[0]['accepted_seq']
+
+                    res = await self.rpc('data', [log_id, seq], server=srv)
+                    if not res:
+                        await asyncio.sleep(wait_sec)
+                        continue
+
+                    yield res[srv]
+                    start_seq = seq + 1
+                    break
 
 
 async def main():
@@ -290,6 +370,12 @@ async def main():
         s = await asyncio.start_server(request_handler, None, int(sys.argv[1]))
         async with s:
             await s.serve_forever()
+
+    elif sys.argv[-1].isdigit():
+        client = Client(sys.argv[1:-2])
+
+        async for meta, data in client.tail(sys.argv[-2], int(sys.argv[-1])):
+            log((meta, len(data)))
 
     else:
         client = Client(sys.argv[1:-1])

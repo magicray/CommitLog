@@ -4,9 +4,7 @@ import json
 import hashlib
 
 
-def main(log_id):
-    log_seq = 0
-
+def main(log_id, log_seq):
     h = hashlib.sha256(log_id.encode()).hexdigest()
     logdir = os.path.join('logs', h[0:3], h[3:6], log_id)
 
@@ -18,7 +16,7 @@ def main(log_id):
         for i in range(1, 6):
             p = os.path.join(str(i), path)
             if os.path.isfile(p):
-                with open(p) as fd:
+                with open(p, 'rb') as fd:
                     headers.append(json.loads(fd.readline()))
 
         if not headers:
@@ -42,4 +40,4 @@ def main(log_id):
 
 
 if '__main__' == __name__:
-    main(sys.argv[1])
+    main(sys.argv[1], int(sys.argv[2]))
