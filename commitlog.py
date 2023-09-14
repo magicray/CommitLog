@@ -347,10 +347,10 @@ class Client():
                     break
 
 
-async def main():
+async def command_line_interface():
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
-    if len(sys.argv) < 3:
+    if 2 == len(sys.argv):
         # Test code. Validate a log stream after a stress test
         log_id, log_seq = sys.argv[1], 0
 
@@ -386,27 +386,30 @@ async def main():
 
         srv = await asyncio.start_server(server, None, port, ssl=SSL)
         async with srv:
-            await srv.serve_forever()
+            return await srv.serve_forever()
 
+    # Tail
     elif sys.argv[-1].isdigit():
-        # Tail
-        client = Client(sys.argv[1], sys.argv[2:-2])
-
+        cert, servers = sys.argv[1], sys.argv[2:-2]
         log_id, log_seq = sys.argv[-2], int(sys.argv[-1])
+
+        client = Client(cert, servers)
 
         async for meta, data in client.tail(log_id, log_seq):
             log((meta, len(data)))
 
+    # Append
     else:
-        # Append
-        client = Client(sys.argv[1], sys.argv[2:-1])
+        cert, servers, log_id = sys.argv[1], sys.argv[2:-1], sys.argv[-1]
+
+        client = Client(cert, servers)
 
         while True:
             blob = sys.stdin.buffer.read(1024*1024)
             if not blob:
                 exit(0)
 
-            result = await client.append(sys.argv[-1], blob)
+            result = await client.append(log_id, blob)
             log(result)
 
             if result['status'] is not True:
@@ -414,4 +417,4 @@ async def main():
 
 
 if '__main__' == __name__:
-    asyncio.run(main())
+    asyncio.run(command_line_interface())
