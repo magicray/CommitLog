@@ -131,10 +131,18 @@ def dump(path, *objects):
     os.replace(tmp, path)
 
 
-def max_file(log_id):
-    # Directory for this log_id
+def get_logdir(log_id):
     h = hashlib.sha256(log_id.encode()).hexdigest()
-    logdir = os.path.join('logs', h[0:3], h[3:6], log_id)
+    return os.path.join('logs', h[0:3], h[3:6], log_id)
+
+
+def get_logfile(log_id, log_seq):
+    l1, l2, = log_seq//1000000, log_seq//1000
+    return os.path.join(get_logdir(log_id), str(l1), str(l2), str(log_seq))
+
+
+def max_file(log_id):
+    logdir = get_logdir(log_id)
 
     # Get max log_seq for this log_id
     # Traverse the three level directory hierarchy picking the highest
@@ -159,12 +167,7 @@ def logseq_server(meta, data):
 def read_server(meta, data):
     what, log_id, log_seq = meta
 
-    h = hashlib.sha256(log_id.encode()).hexdigest()
-    l1, l2, = log_seq//1000000, log_seq//1000
-
-    path = os.path.join(
-        'logs', h[0:3], h[3:6], log_id,
-        str(l1), str(l2), str(log_seq))
+    path = get_logfile(log_id, log_seq)
 
     if os.path.isfile(path):
         with open(path, 'rb') as fd:
@@ -185,9 +188,7 @@ def paxos_server(meta, data):
     if os.path.dirname(log_id):
         return 'INVALID_LOG_ID', log_id
 
-    # Directory for this log_id
-    h = hashlib.sha256(log_id.encode()).hexdigest()
-    logdir = os.path.join('logs', h[0:3], h[3:6], log_id)
+    logdir = get_logdir(log_id)
 
     # File that stores the promised seq for upcoming multi-paxos rounds
     promise_filepath = os.path.join(logdir, 'promised')
@@ -224,10 +225,7 @@ def paxos_server(meta, data):
         hdr = dict(log_id=log_id, log_seq=log_seq, accepted_seq=proposal_seq,
                    md5=md5, uuid=uuid, length=len(data))
 
-        l1, l2, = log_seq//1000000, log_seq//1000
-        path = os.path.join(logdir, str(l1), str(l2), str(log_seq))
-
-        dump(path, hdr, b'\n', data)
+        dump(get_logfile(log_id, log_seq), hdr, b'\n', data)
 
         return 'OK', md5
 
@@ -352,10 +350,33 @@ class Client():
 async def main():
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
-    # Server
-    if len(sys.argv) < 4:
-        cert = sys.argv[1]
-        port = int(sys.argv[2])
+    if len(sys.argv) < 3:
+        # Test code. Validate a log stream after a stress test
+        log_id, log_seq = sys.argv[1], 0
+
+        while True:
+            headers = list()
+            for i in range(1, 6):
+                path = os.path.join(str(i), get_logfile(log_id, log_seq))
+                if os.path.isfile(path):
+                    with open(path, 'rb') as fd:
+                        headers.append(json.loads(fd.readline()))
+
+            if not headers:
+                return
+
+            seq = max([h['accepted_seq'] for h in headers])
+            valid = [h for h in headers if h['accepted_seq'] == seq]
+
+            if len(valid) < 3 or len(set([json.dumps(v) for v in valid])) > 1:
+                return
+
+            log(f'{log_seq} {len(valid)} {valid[0]}')
+            log_seq += 1
+
+    elif 3 == len(sys.argv):
+        # Server
+        cert, port = sys.argv[1], int(sys.argv[2])
 
         SSL = ssl.create_default_context(
             cafile=cert,
@@ -367,18 +388,17 @@ async def main():
         async with srv:
             await srv.serve_forever()
 
-    # Tail
     elif sys.argv[-1].isdigit():
+        # Tail
         client = Client(sys.argv[1], sys.argv[2:-2])
 
-        log_id = sys.argv[-2]
-        log_seq = int(sys.argv[-1])
+        log_id, log_seq = sys.argv[-2], int(sys.argv[-1])
 
         async for meta, data in client.tail(log_id, log_seq):
             log((meta, len(data)))
 
-    # Append
     else:
+        # Append
         client = Client(sys.argv[1], sys.argv[2:-1])
 
         while True:
