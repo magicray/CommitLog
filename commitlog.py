@@ -289,7 +289,7 @@ class Client():
         # Write the blob. Retry a few times to overcome temp failures
         for delay in (1, 1, 1, 1, 1, 0):
             meta = [log_id, proposal_seq, guid, log_seq]
-            res = await self.rpc('accept', meta, data)
+            res = await self.rpc('accept', meta, blob)
 
             if self.quorum > len(res):
                 await asyncio.sleep(delay)
