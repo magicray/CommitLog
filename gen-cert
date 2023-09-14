@@ -1,0 +1,13 @@
+#!/bin/bash
+
+DOMAINS='DNS:127.0.0.1, DNS:localhost'
+
+for DOMAIN in $*; do
+    DOMAINS="$DOMAINS, DNS:$DOMAIN"
+done
+
+openssl req -x509 -newkey rsa:4096 -nodes -sha256 -days 4000      \
+            -subj "/CN=CommitLog Cluster Self Signed Certificate" \
+            -addext "subjectAltName = $DOMAINS"                   \
+	    -keyout self_signed.pem -out self_signed.pem &&
+openssl x509 -in self_signed.pem -text -noout

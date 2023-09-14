@@ -1,5 +1,6 @@
 import os
 import sys
+import ssl
 import json
 import time
 import uuid
@@ -35,6 +36,8 @@ async def server(reader, writer):
 
             try:
                 result = HANDLERS[cmd](hdr, await reader.readexactly(length))
+                if type(result) is str:
+                    result = (result, None, None)
                 status, hdr, data = list(result) + [None] * (3 - len(result))
             except Exception as e:
                 traceback.print_exc()
@@ -57,7 +60,13 @@ async def server(reader, writer):
 
 
 class RPC():
-    def __init__(self, servers):
+    def __init__(self, cert, servers):
+        self.SSL = ssl.create_default_context(
+            cafile=cert,
+            purpose=ssl.Purpose.SERVER_AUTH)
+        self.SSL.load_cert_chain(cert, cert)
+        self.SSL.verify_mode = ssl.CERT_REQUIRED
+
         self.conns = dict()
 
         for srv in servers:
@@ -68,7 +77,7 @@ class RPC():
         try:
             if self.conns[server][0] is None or self.conns[server][1] is None:
                 self.conns[server] = await asyncio.open_connection(
-                    server[0], server[1])
+                    server[0], server[1], ssl=self.SSL)
 
             reader, writer = self.conns[server]
 
@@ -89,7 +98,9 @@ class RPC():
             status, meta, length = json.loads(await reader.readline())
 
             return status, meta, await reader.readexactly(length)
-        except (ConnectionRefusedError, ConnectionResetError):
+        except Exception as e:
+            traceback.print_exc()
+            log(e)
             if self.conns[server][1] is not None:
                 self.conns[server][1].close()
 
@@ -224,8 +235,8 @@ def paxos_server(meta, data):
 
 
 class Client():
-    def __init__(self, servers, quorum=0):
-        self.rpc = RPC(servers)
+    def __init__(self, cert, servers, quorum=0):
+        self.rpc = RPC(cert, servers)
         self.logs = dict()
         self.quorum = max(quorum, int(len(servers)/2) + 1)
 
@@ -301,11 +312,13 @@ class Client():
         while True:
             res = await self.rpc('logseq', log_id)
             if self.quorum > len(res):
+                log(f'NO QUORUM start_seq({start_seq})')
                 await asyncio.sleep(wait_sec)
                 continue
 
             max_seq = max([v[0] for v in res.values()])
             if max_seq <= start_seq:
+                log(f'NO QUORUM start_seq({start_seq}) max_seq({max_seq})')
                 await asyncio.sleep(wait_sec)
                 continue
 
@@ -313,6 +326,7 @@ class Client():
                 while True:
                     res = await self.rpc('read', ['meta', log_id, seq])
                     if self.quorum > len(res):
+                        log(f'NO QUORUM seq({seq}) max_seq({max_seq})')
                         await asyncio.sleep(wait_sec)
                         continue
 
@@ -326,6 +340,7 @@ class Client():
                     res = await self.rpc('read', ['data', log_id, seq],
                                          server=srv)
                     if not res:
+                        log(f'NO QUORUM seq({seq}) max_seq({max_seq})')
                         await asyncio.sleep(wait_sec)
                         continue
 
@@ -337,19 +352,34 @@ class Client():
 async def main():
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
-    if len(sys.argv) < 3:
-        srv = await asyncio.start_server(server, None, int(sys.argv[1]))
+    # Server
+    if len(sys.argv) < 4:
+        cert = sys.argv[1]
+        port = int(sys.argv[2])
+
+        SSL = ssl.create_default_context(
+            cafile=cert,
+            purpose=ssl.Purpose.CLIENT_AUTH)
+        SSL.load_cert_chain(cert, cert)
+        SSL.verify_mode = ssl.CERT_REQUIRED
+
+        srv = await asyncio.start_server(server, None, port, ssl=SSL)
         async with srv:
             await srv.serve_forever()
 
+    # Tail
     elif sys.argv[-1].isdigit():
-        client = Client(sys.argv[1:-2])
+        client = Client(sys.argv[1], sys.argv[2:-2])
 
-        async for meta, data in client.tail(sys.argv[-2], int(sys.argv[-1])):
+        log_id = sys.argv[-2]
+        log_seq = int(sys.argv[-1])
+
+        async for meta, data in client.tail(log_id, log_seq):
             log((meta, len(data)))
 
+    # Append
     else:
-        client = Client(sys.argv[1:-1])
+        client = Client(sys.argv[1], sys.argv[2:-1])
 
         while True:
             blob = sys.stdin.buffer.read(1024*1024)
