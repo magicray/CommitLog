@@ -192,11 +192,8 @@ def paxos_server(meta, data):
         return 'INVALID_LOG_ID', log_id
 
     logdir = get_logdir(log_id)
-
-    # File that stores the promised seq for upcoming multi-paxos rounds
     promise_filepath = os.path.join(logdir, 'promised')
 
-    # To check if there is already a more recent leader
     promised_seq = 0
     if os.path.isfile(promise_filepath):
         with open(promise_filepath) as fd:
@@ -204,16 +201,22 @@ def paxos_server(meta, data):
             uuid = obj['uuid']
             promised_seq = obj['promised_seq']
 
-    # Accept this as the new leader. Any subsequent requests from
-    # any stale, older leaders would be rejected
+    # Accept this as the new leader as it has higher proposal_seq.
+    # Subsequent requests from any stale, older leaders would be rejected
     if proposal_seq > promised_seq:
         uuid = guid
         promised_seq = proposal_seq
         dump(promise_filepath, dict(promised_seq=proposal_seq, uuid=guid))
 
+    # paxos PROMISE phase
+    # Return the most recent accepted value.
+    # Client will take the most recent of these, across servers and
+    # propose that in the ACCEPT phase.
     if 'promise' == phase and proposal_seq == promised_seq and guid == uuid:
+        # Most recent file in this log stream
         log_seq, filepath = max_file(log_id)
 
+        # Log stream does not yet exist
         if 0 == log_seq:
             return 'OK', [0, 0]
 
@@ -223,6 +226,8 @@ def paxos_server(meta, data):
             accepted_seq = obj['accepted_seq']
             return 'OK', [log_seq, accepted_seq, md5_chain], fd.read()
 
+    # paxos ACCEPT phase
+    # Safe to accept as only the most recent leader can reach this stage
     if 'accept' == phase and proposal_seq == promised_seq and guid == uuid:
         log_seq, md5_chain = meta[3], meta[4]
 
@@ -245,55 +250,38 @@ class Client():
         self.logs = dict()
         self.quorum = max(quorum, int(len(servers)/2) + 1)
 
-    async def append(self, log_id, blob):
-        ts = time.time()
+    async def lead(self, log_id):
+        return await self.append(log_id, None)
 
-        if log_id not in self.logs:
+    async def append(self, log_id, blob):
+        if log_id not in self.logs and blob is None:
             # paxos PROMISE phase - block stale leaders from writing
             guid = str(uuid.uuid4())
             proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
             res = await self.rpc('promise', [log_id, proposal_seq, guid])
             if self.quorum > len(res):
-                return dict(status=False, msec=int((time.time() - ts) * 1000))
+                return
 
             # Format = [[log_seq, accepted_seq, md5], blob]
-            proposal = [[0, 0, str(uuid.uuid4())], b'']
+            proposal = [[0, 0, str(uuid.uuid4())], str(uuid.uuid4()).encode()]
             for meta, data in res.values():
                 if meta > proposal[0]:
                     proposal = [meta, data]
 
-            # paxos ACCEPT phase - Write the latest value retrieved earlier
             # Last write from the previous leader might have failed.
             # This client should complete that before any new writes.
-            log_seq, md5, data = proposal[0][0], proposal[0][2], proposal[1]
+            log_seq, md5, blob = proposal[0][0], proposal[0][2], proposal[1]
 
-            # Send old md5 so that an md5 chain can be formed
-            meta = [log_id, proposal_seq, guid, log_seq, md5]
-            res = await self.rpc('accept', meta, data)
-            if self.quorum > len(res):
-                return dict(status=False, msec=int((time.time() - ts) * 1000))
-
-            md5 = set([meta for meta, data in res.values()])
-            if 1 != len(md5):
-                return dict(status=False, msec=int((time.time() - ts) * 1000))
-            md5 = md5.pop()
-
-            # This client is THE LEADER now
-            # Write successfuly completed. Set next log_seq = log_seq + 1
-            self.logs[log_id] = [proposal_seq, guid, log_seq+1, md5]
-
-            if not blob:
-                return dict(status=True, log_seq=log_seq, md5=md5,
-                            msec=int((time.time() - ts) * 1000))
+        elif blob is not None:
+            # Take away leadership temporarily.
+            proposal_seq, guid, log_seq, md5 = self.logs.pop(log_id)
 
         if not blob:
-            return dict(status=True, msec=int((time.time() - ts) * 1000))
+            return
 
-        # Take away leadership temporarily.
-        proposal_seq, guid, log_seq, md5 = self.logs.pop(log_id)
-
-        # Write the blob. Retry a few times to overcome temp failures
+        # paxos ACCEPT phase - write a new blob
+        # Retry a few times to overcome temp failures
         for delay in (1, 1, 1, 1, 1, 0):
             meta = [log_id, proposal_seq, guid, log_seq, md5]
             res = await self.rpc('accept', meta, blob)
@@ -301,20 +289,13 @@ class Client():
             if self.quorum > len(res):
                 await asyncio.sleep(delay)
                 continue
-            else:
-                md5 = set([meta for meta, data in res.values()])
-                if 1 != len(md5):
-                    await asyncio.sleep(delay)
-                    continue
+
+            md5 = set([meta for meta, data in res.values()])
+            if 1 == len(md5):
+                # Write successful. Reinstate as the leader.
                 md5 = md5.pop()
-
-                # Commit successful. Reinstate as the leader.
                 self.logs[log_id] = [proposal_seq, guid, log_seq+1, md5]
-
-                return dict(status=True, log_seq=log_seq, md5=md5,
-                            msec=int((time.time() - ts) * 1000))
-
-        return dict(status=False, msec=int((time.time() - ts) * 1000))
+                return dict(log_seq=log_seq, md5=md5)
 
     async def tail(self, log_id, seq, wait_sec=1):
         max_seq = seq
@@ -345,7 +326,7 @@ class Client():
 
                 meta, data = res[srv]
                 if md5_chain and md5_chain != meta['md5_chain']:
-                    log(('chain mismatch', md5_chain, meta['md5_chain']))
+                    log(('FATAL chain mismatch', md5_chain, meta['md5_chain']))
                     return
 
                 hdr = json.dumps(meta, sort_keys=True).encode()
@@ -358,7 +339,7 @@ class Client():
             await asyncio.sleep(wait_sec)
 
 
-async def command_line_interface():
+async def main():
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
     # Server
@@ -391,17 +372,17 @@ async def command_line_interface():
 
         client = Client(cert, servers)
 
+        log(await client.lead(log_id))
+
         while True:
             blob = sys.stdin.buffer.read(1024*1024)
             if not blob:
                 exit(0)
 
             result = await client.append(log_id, blob)
-            log(result)
 
-            if result['status'] is not True:
-                exit(1)
+            log(result) if result else exit(1)
 
 
 if '__main__' == __name__:
-    asyncio.run(command_line_interface())
+    asyncio.run(main())
