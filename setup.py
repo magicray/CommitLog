@@ -5,7 +5,8 @@ setup(
   name='commitlog',
   modules=['commitlog'],
   version=time.strftime('%Y%m%d'),
-  description='Replicated and strongly consistent Commit Log',
+  description='General Purpose Commit Log - '
+              'Replicated and Strongly Consistent',
   long_description='Paxos for replication and plain filesystem for data. '
                    'Leaderless and highly available.',
   author='Bhupendra Singh',
