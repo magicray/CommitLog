@@ -5,10 +5,11 @@ setup(
   name='commitlog',
   modules=['commitlog'],
   version=time.strftime('%Y%m%d'),
-  description='General Purpose Commit Log - '
+  description='General Purpose Distributed Commit Log - '
               'Replicated and Strongly Consistent',
-  long_description='Paxos for replication and plain filesystem for data. '
-                   'Leaderless and highly available.',
+  long_description='Leaderless and highly available. '
+                   'Multi Paxos for synchronous and consistent replication. '
+                   'Plain filesystem for persistence.',
   author='Bhupendra Singh',
   author_email='bhsingh@gmail.com',
   url='https://github.com/magicray/CommitLog',

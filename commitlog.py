@@ -170,10 +170,7 @@ def read_server(meta, data):
         with open(path, 'rb') as fd:
             meta = json.loads(fd.readline())
 
-            if 'data' == what:
-                return 'OK', meta, fd.read()
-
-            return 'OK', meta, None
+            return 'OK', meta, fd.read() if 'data' == what else None
 
     return 'NOTFOUND', None, None
 
@@ -247,7 +244,7 @@ class Client():
 
             res = await self.rpc('promise', [log_id, proposal_seq, guid])
             if self.quorum > len(res):
-                raise Exception(f'NOT_A_LEADER_YET log_id({log_id})')
+                raise Exception(f'NOT_A_LEADER log_id({log_id})')
 
             # Default values if nothing is found in the PROMISE replies
             md5 = str(uuid.uuid4())
@@ -366,6 +363,11 @@ async def main():
 
         async for meta, data in client.tail(log_id, log_seq):
             assert len(data) == meta['length']
+
+            path = get_logfile(meta['log_id'], meta['log_seq'])
+
+            dump(path, meta, b'\n', data)
+
             log(json.dumps(meta, indent=4, sort_keys=True))
 
     # Append
