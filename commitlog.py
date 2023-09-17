@@ -251,7 +251,7 @@ class Client():
 
             res = await self.rpc('promise', [log_id, proposal_seq, guid])
             if self.quorum > len(res):
-                raise Exception(f'NOT_LEADER log_id({log_id})')
+                raise Exception(f'NO_QUORUM log_id({log_id})')
 
             meta_set = set()
             for meta, data in res.values():
@@ -315,7 +315,7 @@ class Client():
 
                 return json.loads(meta)
 
-        raise Exception(f'COMMIT_FAILED log_id({log_id}) log_seq({log_seq})')
+        raise Exception(f'NO_QUORUM log_id({log_id}) log_seq({log_seq})')
 
     async def tail(self, log_id, seq, wait_sec=1):
         max_seq = seq
@@ -411,7 +411,8 @@ async def main():
             async for meta, data in client.tail(log_id, log_seq):
                 assert len(data) == meta['length']
                 log(json.dumps(meta, indent=4, sort_keys=True))
-                await asyncio.sleep(1)
+
+            await asyncio.sleep(1)
 
 
 if '__main__' == __name__:
