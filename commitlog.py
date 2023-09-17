@@ -53,13 +53,6 @@ async def server(reader, writer):
             os._exit(0)
 
 
-def extract_servers_from_cert(ssl_context):
-    cert = ssl_context.get_ca_certs()[0]
-    servers = [y for x, y in cert['subjectAltName'] if ':' in y]
-    servers = [h.split(':') for h in servers]
-    return set([(ip, int(port)) for ip, port in servers])
-
-
 class RPC():
     def __init__(self, cert):
         self.SSL = ssl.create_default_context(
@@ -68,11 +61,13 @@ class RPC():
         self.SSL.load_cert_chain(cert, cert)
         self.SSL.verify_mode = ssl.CERT_REQUIRED
 
-        self.conns = dict()
-        self.servers = extract_servers_from_cert(self.SSL)
+        # Extract server ip:port from subjectAltName
+        cert = self.SSL.get_ca_certs()[0]
+        servers = [y for x, y in cert['subjectAltName'] if ':' in y]
+        servers = [h.split(':') for h in servers]
+        servers = set([(ip, int(port)) for ip, port in servers])
 
-        for srv in self.servers:
-            self.conns[srv] = None, None
+        self.conns = {srv: (None, None) for srv in servers}
 
     async def _rpc(self, server, cmd, meta=None, data=b''):
         try:
@@ -241,7 +236,7 @@ class Client():
     def __init__(self, cert):
         self.rpc = RPC(cert)
         self.logs = dict()
-        self.quorum = int(len(self.rpc.servers)/2) + 1
+        self.quorum = int(len(self.rpc.conns)/2) + 1
 
     async def commit(self, log_id, blob=None):
         if log_id not in self.logs and not blob:
