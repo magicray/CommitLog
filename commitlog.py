@@ -391,11 +391,13 @@ async def main():
             if not blob:
                 exit(0)
 
+            ts = time.time()
             result = await client.commit(log_id, blob)
 
             if not result:
                 exit(1)
 
+            result['msec'] = int((time.time() - ts) * 1000)
             log(json.dumps(result, indent=4, sort_keys=True))
     # Tail
     elif 4 == len(sys.argv) and sys.argv[3].isdigit():
