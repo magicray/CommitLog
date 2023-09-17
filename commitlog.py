@@ -53,8 +53,16 @@ async def server(reader, writer):
             os._exit(0)
 
 
+def extract_servers_from_cert(ssl_context):
+    cert = ssl_context.get_ca_certs()[0]
+    hosts = [y for x, y in cert['subjectAltName']]
+    ports = cert['subject'][0][0][1].split(' ')
+
+    return [(ip, int(port)) for ip, port in zip(hosts, ports)]
+
+
 class RPC():
-    def __init__(self, cert, servers):
+    def __init__(self, cert):
         self.SSL = ssl.create_default_context(
             cafile=cert,
             purpose=ssl.Purpose.SERVER_AUTH)
@@ -62,10 +70,10 @@ class RPC():
         self.SSL.verify_mode = ssl.CERT_REQUIRED
 
         self.conns = dict()
+        self.servers = extract_servers_from_cert(self.SSL)
 
-        for srv in servers:
-            ip, port = srv.split(':')
-            self.conns[(ip, int(port))] = None, None
+        for srv in self.servers:
+            self.conns[srv] = None, None
 
     async def _rpc(self, server, cmd, meta=None, data=b''):
         try:
@@ -231,10 +239,10 @@ def paxos_server(meta, data):
 
 
 class Client():
-    def __init__(self, cert, servers, quorum=0):
-        self.rpc = RPC(cert, servers)
+    def __init__(self, cert):
+        self.rpc = RPC(cert)
         self.logs = dict()
-        self.quorum = max(quorum, int(len(servers)/2) + 1)
+        self.quorum = int(len(self.rpc.servers)/2) + 1
 
     async def commit(self, log_id, blob=None):
         if log_id not in self.logs and not blob:
@@ -341,7 +349,7 @@ async def main():
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
     # Server
-    if len(sys.argv) < 4:
+    if 3 == len(sys.argv) and sys.argv[2].isdigit():
         cert, port = sys.argv[1], int(sys.argv[2])
 
         SSL = ssl.create_default_context(
@@ -354,27 +362,11 @@ async def main():
         async with srv:
             return await srv.serve_forever()
 
-    # Tail
-    elif sys.argv[-1].isdigit():
-        cert, servers = sys.argv[1], sys.argv[2:-2]
-        log_id, log_seq = sys.argv[-2], int(sys.argv[-1])
-
-        client = Client(cert, servers)
-
-        async for meta, data in client.tail(log_id, log_seq):
-            assert len(data) == meta['length']
-
-            path = get_logfile(meta['log_id'], meta['log_seq'])
-
-            dump(path, meta, b'\n', data)
-
-            log(json.dumps(meta, indent=4, sort_keys=True))
-
     # Append
-    else:
-        cert, servers, log_id = sys.argv[1], sys.argv[2:-1], sys.argv[-1]
+    elif 3 == len(sys.argv):
+        cert, log_id = sys.argv[1], sys.argv[2]
 
-        client = Client(cert, servers)
+        client = Client(cert)
 
         result = await client.commit(log_id)
         log(json.dumps(result, indent=4, sort_keys=True))
@@ -390,6 +382,20 @@ async def main():
                 exit(1)
 
             log(json.dumps(result, indent=4, sort_keys=True))
+    # Tail
+    elif 4 == len(sys.argv) and sys.argv[3].isdigit():
+        cert, log_id, log_seq = sys.argv[1], sys.argv[2], int(sys.argv[3])
+
+        client = Client(cert)
+
+        async for meta, data in client.tail(log_id, log_seq):
+            assert len(data) == meta['length']
+
+            path = get_logfile(meta['log_id'], meta['log_seq'])
+
+            dump(path, meta, b'\n', data)
+
+            log(json.dumps(meta, indent=4, sort_keys=True))
 
 
 if '__main__' == __name__:

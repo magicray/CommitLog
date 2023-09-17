@@ -6,11 +6,11 @@ SERVERS=""
 for SRV in $*; do
     HOST=$(echo $SRV | cut -d: -f1)
     PORT=$(echo $SRV | cut -d: -f2)
-    CN="$CN, $PORT"
+    CN="$CN $PORT"
     SERVERS="$SERVERS, DNS:$HOST"
 done
 
-CN=$(echo $CN | cut -c 3- )
+CN=$(echo $CN | cut -c 1- )
 SERVERS=$(echo $SERVERS | cut -c 3-)
 
 openssl req -x509 -newkey rsa:4096 -nodes -sha256 -days 4000      \
