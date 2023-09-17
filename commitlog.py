@@ -323,8 +323,13 @@ class Client():
 
         while True:
             res = await self.rpc('logseq', log_id)
-            if len(res) >= self.quorum:
-                max_seq = max([v[0] for v in res.values()])
+            if self.quorum > len(res):
+                log('waiting for quorum or data')
+                await asyncio.sleep(wait_sec)
+
+            max_seq = max([v[0] for v in res.values()])
+            if seq >= max_seq:
+                return
 
             while seq < max_seq:
                 res = await self.rpc('read', ['meta', log_id, seq])
@@ -355,9 +360,6 @@ class Client():
 
                 yield meta, data
                 seq = seq + 1
-
-            log('waiting for quorum or data')
-            await asyncio.sleep(wait_sec)
 
 
 async def main():
@@ -405,14 +407,11 @@ async def main():
 
         client = Client(cert)
 
-        async for meta, data in client.tail(log_id, log_seq):
-            assert len(data) == meta['length']
-
-            path = get_logfile(meta['log_id'], meta['log_seq'])
-
-            dump(path, meta, b'\n', data)
-
-            log(json.dumps(meta, indent=4, sort_keys=True))
+        while True:
+            async for meta, data in client.tail(log_id, log_seq):
+                assert len(data) == meta['length']
+                log(json.dumps(meta, indent=4, sort_keys=True))
+                await asyncio.sleep(1)
 
 
 if '__main__' == __name__:
