@@ -251,7 +251,19 @@ class Client():
 
             res = await self.rpc('promise', [log_id, proposal_seq, guid])
             if self.quorum > len(res):
-                raise Exception(f'NOT_A_LEADER log_id({log_id})')
+                raise Exception(f'NOT_LEADER log_id({log_id})')
+
+            meta_set = set()
+            for meta, data in res.values():
+                meta_set.add(json.dumps(meta, sort_keys=True))
+
+            if 1 == len(meta_set):
+                # Last log was written successfully to a majority
+                meta = json.loads(meta_set.pop())
+                log_seq, md5 = meta['log_seq'], meta['md5_chain']
+
+                self.logs[log_id] = [proposal_seq, guid, log_seq+1, md5]
+                return meta
 
             # Default values if nothing is found in the PROMISE replies
             md5 = str(uuid.uuid4())
