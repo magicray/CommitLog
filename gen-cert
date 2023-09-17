@@ -1,19 +1,19 @@
 #!/bin/bash
 
-CN=""
-SERVERS=""
+DNS="DNS:localhost"
 
 for SRV in $*; do
     HOST=$(echo $SRV | cut -d: -f1)
-    PORT=$(echo $SRV | cut -d: -f2)
-    CN="$CN $PORT"
-    SERVERS="$SERVERS, DNS:$HOST"
+    DNS="$DNS, DNS:$HOST"
 done
 
-CN=$(echo $CN | cut -c 1- )
-SERVERS=$(echo $SERVERS | cut -c 3-)
+for SRV in $*; do
+    DNS="$DNS, DNS:$SRV"
+done
 
-openssl req -x509 -newkey rsa:4096 -nodes -sha256 -days 4000      \
-            -subj "/CN=$CN" -addext "subjectAltName = $SERVERS"   \
+UUID=$(uuid -v 4)
+openssl req -x509 -newkey rsa:4096 -nodes -sha256 -days 4000 \
+	    -subj "/CN=CommitLog Cluster - $UUID"            \
+	    -addext "subjectAltName = $DNS"                  \
 	    -keyout self_signed.pem -out self_signed.pem &&
 openssl x509 -in self_signed.pem -text -noout

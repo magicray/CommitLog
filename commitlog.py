@@ -55,10 +55,9 @@ async def server(reader, writer):
 
 def extract_servers_from_cert(ssl_context):
     cert = ssl_context.get_ca_certs()[0]
-    hosts = [y for x, y in cert['subjectAltName']]
-    ports = cert['subject'][0][0][1].split(' ')
-
-    return [(ip, int(port)) for ip, port in zip(hosts, ports)]
+    servers = [y for x, y in cert['subjectAltName'] if ':' in y]
+    servers = [h.split(':') for h in servers]
+    return set([(ip, int(port)) for ip, port in servers])
 
 
 class RPC():
@@ -332,7 +331,8 @@ class Client():
 
                 meta, data = res[srv]
                 if md5_chain and md5_chain != meta['md5_chain']:
-                    log(('FATAL chain mismatch', md5_chain, meta['md5_chain']))
+                    log(f'md5_chain mismatch {md5_chain}')
+                    log(json.dumps(meta, sort_keys=True))
                     return
 
                 hdr = json.dumps(meta, sort_keys=True).encode()
