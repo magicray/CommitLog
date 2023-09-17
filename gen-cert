@@ -1,13 +1,19 @@
 #!/bin/bash
 
-DOMAINS='DNS:127.0.0.1, DNS:localhost'
+CN=""
+SERVERS=""
 
-for DOMAIN in $*; do
-    DOMAINS="$DOMAINS, DNS:$DOMAIN"
+for SRV in $*; do
+    HOST=$(echo $SRV | cut -d: -f1)
+    PORT=$(echo $SRV | cut -d: -f2)
+    CN="$CN, $PORT"
+    SERVERS="$SERVERS, DNS:$HOST"
 done
 
+CN=$(echo $CN | cut -c 3- )
+SERVERS=$(echo $SERVERS | cut -c 3-)
+
 openssl req -x509 -newkey rsa:4096 -nodes -sha256 -days 4000      \
-            -subj "/CN=CommitLog Cluster Self Signed Certificate" \
-            -addext "subjectAltName = $DOMAINS"                   \
+            -subj "/CN=$CN" -addext "subjectAltName = $SERVERS"   \
 	    -keyout self_signed.pem -out self_signed.pem &&
 openssl x509 -in self_signed.pem -text -noout
