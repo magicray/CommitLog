@@ -257,10 +257,13 @@ class Client():
             for meta, data in res.values():
                 meta_set.add(json.dumps(meta, sort_keys=True))
 
-            if 1 == len(meta_set):
+            if 1 == len(meta_set) and 0 != meta['log_seq']:
                 # Last log was written successfully to a majority
-                meta = json.loads(meta_set.pop())
-                log_seq, md5 = meta['log_seq'], meta['md5_chain']
+                meta = meta_set.pop()
+                md5 = hashlib.md5(meta.encode()).hexdigest()
+
+                meta = json.loads(meta)
+                log_seq = meta['log_seq']
 
                 self.logs[log_id] = [proposal_seq, guid, log_seq+1, md5]
                 return meta
@@ -344,7 +347,7 @@ class Client():
                 meta, data = res[srv]
                 if md5_chain and md5_chain != meta['md5_chain']:
                     log(f'md5_chain mismatch {md5_chain}')
-                    log(json.dumps(meta, sort_keys=True))
+                    log(json.dumps(meta, indent=4, sort_keys=True))
                     return
 
                 hdr = json.dumps(meta, sort_keys=True).encode()
