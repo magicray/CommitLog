@@ -126,6 +126,9 @@ def dump(path, *objects):
 
     os.replace(tmp, path)
 
+    # Force flush all data to disk
+    os.sync()
+
 
 def get_logdir(log_id):
     h = hashlib.sha256(log_id.encode()).hexdigest()
@@ -406,6 +409,7 @@ async def main():
             async for meta, data in client.tail(log_id, log_seq):
                 assert len(data) == meta['length']
                 log(json.dumps(meta, indent=4, sort_keys=True))
+                log_seq = meta['log_seq'] + 1
 
             await asyncio.sleep(1)
 
