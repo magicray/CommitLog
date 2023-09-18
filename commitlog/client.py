@@ -2,7 +2,6 @@ import ssl
 import json
 import time
 import uuid
-import hashlib
 import asyncio
 from logging import critical as log
 
@@ -83,11 +82,9 @@ class Client():
 
             if 1 == len(meta_set) and 0 != meta['log_seq']:
                 # Last log was written successfully to a majority
-                meta = meta_set.pop()
-                md5 = hashlib.md5(meta.encode()).hexdigest()
+                meta = json.loads(meta_set.pop())
 
-                meta = json.loads(meta)
-                log_seq = meta['log_seq']
+                log_seq, md5 = meta['log_seq'], meta['md5']
 
                 self.leader = [proposal_seq, guid, log_seq+1, md5]
                 return meta
@@ -105,9 +102,8 @@ class Client():
                 new = meta['log_seq'], meta['accepted_seq']
 
                 if new > old:
-                    md5 = meta['md5_chain']
+                    md5 = meta['md5']
                     blob = data
-
                     log_seq = meta['log_seq']
                     accepted_seq = meta['accepted_seq']
 
@@ -134,22 +130,22 @@ class Client():
 
             # Write successful. Reinstate as the leader.
             if 1 == len(meta):
-                meta = meta.pop()
-                md5 = hashlib.md5(meta.encode()).hexdigest()
-                self.leader = [proposal_seq, guid, log_seq+1, md5]
+                meta = json.loads(meta.pop())
+                self.leader = [proposal_seq, guid, log_seq+1, meta['md5']]
 
-                return json.loads(meta)
+                return meta
 
         raise Exception(f'NO_QUORUM log_seq({log_seq})')
 
     async def tail(self, seq, wait_sec=1):
         max_seq = seq
-        md5_chain = None
+        md5_prev = None
 
         while True:
             res = await self.rpc('logseq')
             if self.quorum > len(res):
                 await asyncio.sleep(wait_sec)
+                continue
 
             max_seq = max([v[0] for v in res.values()])
             if seq >= max_seq:
@@ -172,18 +168,16 @@ class Client():
                     await asyncio.sleep(wait_sec)
                     continue
 
-                status, meta, data, = await self.rpc.rpc(
-                    srv, 'read', ['data', seq])
-                if 'OK' != status:
+                result = await self.rpc.rpc(srv, 'read', ['data', seq])
+                if not result or 'OK' != result[0]:
                     await asyncio.sleep(wait_sec)
                     continue
 
-                if md5_chain and md5_chain != meta['md5_chain']:
-                    raise Exception(f'MD5_CHAIN_MISMATCH {md5_chain}')
-                    return
+                status, meta, data = result
+                if md5_prev and md5_prev != meta['md5_prev']:
+                    raise Exception(f'MD5_CHAIN_MISMATCH {seq} {md5_prev}')
 
-                hdr = json.dumps(meta, sort_keys=True).encode()
-                md5_chain = hashlib.md5(hdr).hexdigest()
+                md5_prev = meta['md5']
 
                 yield meta, data
                 seq = seq + 1

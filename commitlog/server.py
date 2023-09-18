@@ -144,11 +144,11 @@ def paxos_server(meta, data):
     # paxos ACCEPT phase
     # Safe to accept as only the most recent leader can reach this stage
     if 'accept' == phase and proposal_seq == promised_seq and guid == uuid:
-        log_seq, md5_chain = meta[2], meta[3]
+        log_seq, md5_prev = meta[2], meta[3]
 
         md5 = hashlib.md5(data).hexdigest()
         hdr = dict(log_id=G.log_id, log_seq=log_seq, accepted_seq=proposal_seq,
-                   md5=md5, md5_chain=md5_chain, leader=uuid, length=len(data))
+                   md5=md5, md5_prev=md5_prev, leader=uuid, length=len(data))
 
         dump(get_logfile(log_seq), hdr, b'\n', data)
 
