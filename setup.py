@@ -2,8 +2,8 @@ import time
 from distutils.core import setup
 
 setup(
-  name='commitlog',
-  modules=['commitlog'],
+  name='CommitLog',
+  packages=['commitlog'],
   version=time.strftime('%Y%m%d'),
   description='General Purpose Distributed Commit Log - '
               'Replicated and Strongly Consistent',
