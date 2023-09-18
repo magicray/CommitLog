@@ -52,40 +52,15 @@ async def server(reader, writer):
             os._exit(0)
 
 
-def dump(path, *objects):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-    tmp = path + '.' + str(uuid.uuid4()) + '.tmp'
-    with open(tmp, 'wb') as fd:
-        for obj in objects:
-            if type(obj) is not bytes:
-                obj = json.dumps(obj, sort_keys=True).encode()
-
-            fd.write(obj)
-
-    os.replace(tmp, path)
-
-    # Force flush all data to disk
-    os.sync()
-
-
-def get_logdir(log_id):
-    h = hashlib.sha256(log_id.encode()).hexdigest()
-    return os.path.join('logs', h[0:3], h[3:6], log_id)
-
-
-def get_logfile(log_id, log_seq):
+def get_logfile(log_seq):
+    logdir = os.path.join('CommitLog', str(G.log_id))
     l1, l2, = log_seq//1000000, log_seq//1000
-    return os.path.join(get_logdir(log_id), str(l1), str(l2), str(log_seq))
+    return os.path.join(logdir, str(l1), str(l2), str(log_seq))
 
 
-def max_file(log_id):
-    logdir = get_logdir(log_id)
+def max_file():
+    logdir = os.path.join('CommitLog', str(G.log_id))
 
-    if not os.path.isdir(logdir):
-        return 0, None
-
-    # Get max log_seq for this log_id
     # Traverse the three level directory hierarchy picking the highest
     # numbered dir/file at each level
     l1_dirs = [int(f) for f in os.listdir(logdir) if f.isdigit()]
@@ -102,13 +77,13 @@ def max_file(log_id):
 
 
 def logseq_server(meta, data):
-    return 'OK', max_file(meta)[0], None
+    return 'OK', max_file()[0], None
 
 
 def read_server(meta, data):
-    what, log_id, log_seq = meta
+    what, log_seq = meta
 
-    path = get_logfile(log_id, log_seq)
+    path = get_logfile(log_seq)
 
     if os.path.isfile(path):
         with open(path, 'rb') as fd:
@@ -119,14 +94,26 @@ def read_server(meta, data):
     return 'NOTFOUND', None, None
 
 
+def dump(path, *objects):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    tmp = path + '.' + str(uuid.uuid4()) + '.tmp'
+    with open(tmp, 'wb') as fd:
+        for obj in objects:
+            if type(obj) is not bytes:
+                obj = json.dumps(obj, sort_keys=True).encode()
+
+            fd.write(obj)
+
+    os.replace(tmp, path)
+    os.sync()
+
+
 def paxos_server(meta, data):
-    phase = 'promise' if 3 == len(meta) else 'accept'
-    log_id, proposal_seq, guid = meta[0], meta[1], meta[2]
+    phase = 'promise' if 2 == len(meta) else 'accept'
+    proposal_seq, guid = meta[0], meta[1]
 
-    if os.path.dirname(log_id):
-        return 'INVALID_LOG_ID', log_id, None
-
-    logdir = get_logdir(log_id)
+    logdir = os.path.join('CommitLog', str(G.log_id))
     promise_filepath = os.path.join(logdir, 'promised')
 
     promised_seq = 0
@@ -149,7 +136,7 @@ def paxos_server(meta, data):
     # propose that in the ACCEPT phase.
     if 'promise' == phase and proposal_seq == promised_seq and guid == uuid:
         # Most recent file in this log stream
-        log_seq, filepath = max_file(log_id)
+        log_seq, filepath = max_file()
 
         # Log stream does not yet exist
         if 0 == log_seq:
@@ -161,17 +148,21 @@ def paxos_server(meta, data):
     # paxos ACCEPT phase
     # Safe to accept as only the most recent leader can reach this stage
     if 'accept' == phase and proposal_seq == promised_seq and guid == uuid:
-        log_seq, md5_chain = meta[3], meta[4]
+        log_seq, md5_chain = meta[2], meta[3]
 
         md5 = hashlib.md5(data).hexdigest()
-        hdr = dict(log_id=log_id, log_seq=log_seq, accepted_seq=proposal_seq,
+        hdr = dict(log_id=G.log_id, log_seq=log_seq, accepted_seq=proposal_seq,
                    md5=md5, md5_chain=md5_chain, uuid=uuid, length=len(data))
 
-        dump(get_logfile(log_id, log_seq), hdr, b'\n', data)
+        dump(get_logfile(log_seq), hdr, b'\n', data)
 
         return 'OK', hdr, None
 
     return 'STALE_PROPOSAL_SEQ', meta, None
+
+
+class G:
+    log_id = None
 
 
 async def main():
@@ -184,6 +175,8 @@ async def main():
         purpose=ssl.Purpose.CLIENT_AUTH)
     SSL.load_cert_chain(cert, cert)
     SSL.verify_mode = ssl.CERT_REQUIRED
+
+    G.log_id = SSL.get_ca_certs()[0]['subject'][0][0][1].split()[-1]
 
     srv = await asyncio.start_server(server, None, port, ssl=SSL)
     async with srv:

@@ -1,19 +1,5 @@
 #!/bin/bash
 
-DNS="DNS:localhost"
-
-for SRV in $*; do
-    HOST=$(echo $SRV | cut -d: -f1)
-    DNS="$DNS, DNS:$HOST"
-done
-
-for SRV in $*; do
-    DNS="$DNS, DNS:$SRV"
-done
-
-UUID=$(uuid -v 4)
 openssl req -x509 -newkey rsa:4096 -nodes -sha256 -days 4000 \
-	    -subj "/CN=CommitLog Cluster - $UUID"            \
-	    -addext "subjectAltName = $DNS"                  \
-	    -keyout self_signed.pem -out self_signed.pem &&
-openssl x509 -in self_signed.pem -text -noout
+	    -subj "/CN=CommitLog $1" -keyout $1.pem -out $1.pem &&
+openssl x509 -in $1.pem -text -noout

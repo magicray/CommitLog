@@ -11,13 +11,33 @@ import commitlog.client
 async def main():
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
-    client = commitlog.client.Client(sys.argv[1])
-    log_id = sys.argv[2]
+    cert = sys.argv[1]
+
+    # Tail
+    if sys.argv[-1].isdigit():
+        servers = [argv.split(':') for argv in sys.argv[2:-1]]
+        servers = [(ip, int(port)) for ip, port in servers]
+
+        client = commitlog.client.Client(cert, servers)
+        log_seq = int(sys.argv[-1])
+
+        while True:
+            async for meta, data in client.tail(log_seq):
+                assert len(data) == meta['length']
+                log(json.dumps(meta, indent=4, sort_keys=True))
+                log_seq = meta['log_seq'] + 1
+
+            await asyncio.sleep(1)
 
     # Append
-    if 3 == len(sys.argv):
+    else:
+        servers = [argv.split(':') for argv in sys.argv[2:]]
+        servers = [(ip, int(port)) for ip, port in servers]
+
+        client = commitlog.client.Client(cert, servers)
+
         try:
-            result = await client.commit(log_id)
+            result = await client.commit()
             log(json.dumps(result, indent=4, sort_keys=True))
 
             while True:
@@ -26,7 +46,7 @@ async def main():
                     exit(0)
 
                 ts = time.time()
-                result = await client.commit(log_id, blob)
+                result = await client.commit(blob)
 
                 if not result:
                     exit(1)
@@ -36,18 +56,6 @@ async def main():
         except Exception as e:
             log(e)
             exit(1)
-
-    # Tail
-    elif 4 == len(sys.argv) and sys.argv[3].isdigit():
-        log_seq = int(sys.argv[3])
-
-        while True:
-            async for meta, data in client.tail(log_id, log_seq):
-                assert len(data) == meta['length']
-                log(json.dumps(meta, indent=4, sort_keys=True))
-                log_seq = meta['log_seq'] + 1
-
-            await asyncio.sleep(1)
 
 
 if '__main__' == __name__:

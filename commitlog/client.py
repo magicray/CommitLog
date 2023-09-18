@@ -4,27 +4,21 @@ import time
 import uuid
 import hashlib
 import asyncio
-import traceback
 from logging import critical as log
 
 
 class RPC():
-    def __init__(self, cert):
+    def __init__(self, cert, servers):
         self.SSL = ssl.create_default_context(
             cafile=cert,
             purpose=ssl.Purpose.SERVER_AUTH)
         self.SSL.load_cert_chain(cert, cert)
         self.SSL.verify_mode = ssl.CERT_REQUIRED
-
-        # Extract server ip:port from subjectAltName
-        cert = self.SSL.get_ca_certs()[0]
-        servers = [y for x, y in cert['subjectAltName'] if ':' in y]
-        servers = [h.split(':') for h in servers]
-        servers = set([(ip, int(port)) for ip, port in servers])
+        self.SSL.check_hostname = False
 
         self.conns = {srv: (None, None) for srv in servers}
 
-    async def _rpc(self, server, cmd, meta=None, data=b''):
+    async def rpc(self, server, cmd, meta=None, data=b''):
         try:
             if self.conns[server][0] is None or self.conns[server][1] is None:
                 self.conns[server] = await asyncio.open_connection(
@@ -50,18 +44,17 @@ class RPC():
 
             return status, meta, await reader.readexactly(length)
         except Exception as e:
-            # traceback.print_exc()
             log(e)
             if self.conns[server][1] is not None:
                 self.conns[server][1].close()
 
             self.conns[server] = None, None, None
 
-    async def __call__(self, cmd, meta=None, data=b'', server=None):
-        servers = self.conns.keys() if server is None else [server]
+    async def __call__(self, cmd, meta=None, data=b''):
+        servers = self.conns.keys()
 
         res = await asyncio.gather(
-            *[self._rpc(s, cmd, meta, data) for s in servers],
+            *[self.rpc(s, cmd, meta, data) for s in servers],
             return_exceptions=True)
 
         return {s: (r[1], r[2]) for s, r in zip(servers, res)
@@ -69,20 +62,20 @@ class RPC():
 
 
 class Client():
-    def __init__(self, cert):
-        self.rpc = RPC(cert)
-        self.logs = dict()
-        self.quorum = int(len(self.rpc.conns)/2) + 1
+    def __init__(self, cert, servers):
+        self.rpc = RPC(cert, servers)
+        self.quorum = int(len(servers)/2) + 1
+        self.leader = None
 
-    async def commit(self, log_id, blob=None):
-        if log_id not in self.logs and not blob:
+    async def commit(self, blob=None):
+        if self.leader is None and not blob:
             # paxos PROMISE phase - block stale leaders from writing
             guid = str(uuid.uuid4())
             proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
-            res = await self.rpc('promise', [log_id, proposal_seq, guid])
+            res = await self.rpc('promise', [proposal_seq, guid])
             if self.quorum > len(res):
-                raise Exception(f'NO_QUORUM log_id({log_id})')
+                raise Exception('NO_QUORUM')
 
             meta_set = set()
             for meta, data in res.values():
@@ -96,7 +89,7 @@ class Client():
                 meta = json.loads(meta)
                 log_seq = meta['log_seq']
 
-                self.logs[log_id] = [proposal_seq, guid, log_seq+1, md5]
+                self.leader = [proposal_seq, guid, log_seq+1, md5]
                 return meta
 
             # Default values if nothing is found in the PROMISE replies
@@ -119,16 +112,17 @@ class Client():
                     accepted_seq = meta['accepted_seq']
 
         if not blob:
-            raise Exception(f'EMPTY_BLOB log_id({log_id}) log_seq({log_seq})')
+            raise Exception(f'EMPTY_BLOB log_seq({log_seq})')
 
-        if log_id in self.logs:
+        if self.leader:
             # Take away leadership temporarily.
-            proposal_seq, guid, log_seq, md5 = self.logs.pop(log_id)
+            proposal_seq, guid, log_seq, md5 = self.leader
+            self.leader = None
 
         # paxos ACCEPT phase - write a new blob
         # Retry a few times to overcome temp failures
         for delay in (1, 1, 1, 1, 1, 0):
-            meta = [log_id, proposal_seq, guid, log_seq, md5]
+            meta = [proposal_seq, guid, log_seq, md5]
             res = await self.rpc('accept', meta, blob)
 
             if self.quorum > len(res):
@@ -142,18 +136,18 @@ class Client():
             if 1 == len(meta):
                 meta = meta.pop()
                 md5 = hashlib.md5(meta.encode()).hexdigest()
-                self.logs[log_id] = [proposal_seq, guid, log_seq+1, md5]
+                self.leader = [proposal_seq, guid, log_seq+1, md5]
 
                 return json.loads(meta)
 
-        raise Exception(f'NO_QUORUM log_id({log_id}) log_seq({log_seq})')
+        raise Exception(f'NO_QUORUM log_seq({log_seq})')
 
-    async def tail(self, log_id, seq, wait_sec=1):
+    async def tail(self, seq, wait_sec=1):
         max_seq = seq
         md5_chain = None
 
         while True:
-            res = await self.rpc('logseq', log_id)
+            res = await self.rpc('logseq')
             if self.quorum > len(res):
                 await asyncio.sleep(wait_sec)
 
@@ -162,23 +156,28 @@ class Client():
                 return
 
             while seq < max_seq:
-                res = await self.rpc('read', ['meta', log_id, seq])
-                if len(res) >= self.quorum:
-                    srv = None
-                    accepted_seq = 0
-                    for server, res in res.items():
-                        if res[0]['accepted_seq'] > accepted_seq:
-                            srv = server
-                            accepted_seq = res[0]['accepted_seq']
-
-                if srv:
-                    res = await self.rpc('read', ['data', log_id, seq],
-                                         server=srv)
-                if not res:
+                res = await self.rpc('read', ['meta', seq])
+                if self.quorum > len(res):
                     await asyncio.sleep(wait_sec)
                     continue
 
-                meta, data = res[srv]
+                srv = None
+                accepted_seq = 0
+                for server, res in res.items():
+                    if res[0]['accepted_seq'] > accepted_seq:
+                        srv = server
+                        accepted_seq = res[0]['accepted_seq']
+
+                if not srv:
+                    await asyncio.sleep(wait_sec)
+                    continue
+
+                status, meta, data, = await self.rpc.rpc(
+                    srv, 'read', ['data', seq])
+                if 'OK' != status:
+                    await asyncio.sleep(wait_sec)
+                    continue
+
                 if md5_chain and md5_chain != meta['md5_chain']:
                     raise Exception(f'MD5_CHAIN_MISMATCH {md5_chain}')
                     return
