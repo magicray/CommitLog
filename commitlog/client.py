@@ -102,7 +102,7 @@ class Client():
                 new = meta['log_seq'], meta['accepted_seq']
 
                 if new > old:
-                    md5 = meta['md5']
+                    md5 = meta['md5_prev']
                     blob = data
                     log_seq = meta['log_seq']
                     accepted_seq = meta['accepted_seq']
