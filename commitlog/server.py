@@ -53,19 +53,16 @@ async def server(reader, writer):
 
 
 def get_logfile(log_seq):
-    logdir = os.path.join('CommitLog', str(G.log_id))
     l1, l2, = log_seq//1000000, log_seq//1000
-    return os.path.join(logdir, str(l1), str(l2), str(log_seq))
+    return os.path.join(G.logdir, str(l1), str(l2), str(log_seq))
 
 
 def max_file():
-    logdir = os.path.join('CommitLog', str(G.log_id))
-
     # Traverse the three level directory hierarchy picking the highest
     # numbered dir/file at each level
-    l1_dirs = [int(f) for f in os.listdir(logdir) if f.isdigit()]
+    l1_dirs = [int(f) for f in os.listdir(G.logdir) if f.isdigit()]
     for l1 in sorted(l1_dirs, reverse=True):
-        l2_dirname = os.path.join(logdir, str(l1))
+        l2_dirname = os.path.join(G.logdir, str(l1))
         l2_dirs = [int(f) for f in os.listdir(l2_dirname) if f.isdigit()]
         for l2 in sorted(l2_dirs, reverse=True):
             l3_dirname = os.path.join(l2_dirname, str(l2))
@@ -113,8 +110,7 @@ def paxos_server(meta, data):
     phase = 'promise' if 2 == len(meta) else 'accept'
     proposal_seq, guid = meta[0], meta[1]
 
-    logdir = os.path.join('CommitLog', str(G.log_id))
-    promise_filepath = os.path.join(logdir, 'promised')
+    promise_filepath = os.path.join(G.logdir, 'promised')
 
     promised_seq = 0
     if os.path.isfile(promise_filepath):
@@ -163,6 +159,7 @@ def paxos_server(meta, data):
 
 class G:
     log_id = None
+    logdir = None
 
 
 async def main():
@@ -177,6 +174,7 @@ async def main():
     SSL.verify_mode = ssl.CERT_REQUIRED
 
     G.log_id = SSL.get_ca_certs()[0]['subject'][0][0][1].split()[-1]
+    G.logdir = os.path.join('CommitLog', G.log_id)
 
     srv = await asyncio.start_server(server, None, port, ssl=SSL)
     async with srv:
