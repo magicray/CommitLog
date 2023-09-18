@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import ssl
 import json
@@ -110,21 +111,20 @@ def paxos_server(meta, data):
     phase = 'promise' if 2 == len(meta) else 'accept'
     proposal_seq, guid = meta[0], meta[1]
 
-    promise_filepath = os.path.join(G.logdir, 'promised')
-
     promised_seq = 0
+    promise_filepath = os.path.join(G.logdir, 'promised')
     if os.path.isfile(promise_filepath):
         with open(promise_filepath) as fd:
             obj = json.load(fd)
             uuid = obj['uuid']
             promised_seq = obj['promised_seq']
 
-    # Accept this as the new leader as it has higher proposal_seq.
-    # Subsequent requests from any stale, older leaders would be rejected
+    # Accept the caller as the new leader as it sent the higher proposal_seq.
+    # Any requests from older leaders would be rejected.
     if proposal_seq > promised_seq:
         uuid = guid
         promised_seq = proposal_seq
-        dump(promise_filepath, dict(promised_seq=proposal_seq, uuid=guid))
+        dump(promise_filepath, dict(promised_seq=promised_seq, uuid=uuid))
 
     # paxos PROMISE phase
     # Return the most recent accepted value.
@@ -141,14 +141,13 @@ def paxos_server(meta, data):
         with open(filepath, 'rb') as fd:
             return 'OK', json.loads(fd.readline()), fd.read()
 
-    # paxos ACCEPT phase
-    # Safe to accept as only the most recent leader can reach this stage
+    # paxos ACCEPT phase - only the most recent leader can reach this stage
     if 'accept' == phase and proposal_seq == promised_seq and guid == uuid:
         log_seq, md5_prev = meta[2], meta[3]
 
-        md5 = hashlib.md5(data).hexdigest()
         hdr = dict(log_id=G.log_id, log_seq=log_seq, accepted_seq=proposal_seq,
-                   md5=md5, md5_prev=md5_prev, leader=uuid, length=len(data))
+                   md5=hashlib.md5(data).hexdigest(),
+                   md5_prev=md5_prev, leader=uuid, length=len(data))
 
         dump(get_logfile(log_seq), hdr, b'\n', data)
 
@@ -173,7 +172,10 @@ async def main():
     SSL.load_cert_chain(cert, cert)
     SSL.verify_mode = ssl.CERT_REQUIRED
 
-    G.log_id = SSL.get_ca_certs()[0]['subject'][0][0][1].split()[-1]
+    sub = SSL.get_ca_certs()[0]['subject'][0][0][1]
+    guid = uuid.UUID(re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}', sub)[0])
+
+    G.log_id = str(guid)
     G.logdir = os.path.join('CommitLog', G.log_id)
 
     srv = await asyncio.start_server(server, None, port, ssl=SSL)
