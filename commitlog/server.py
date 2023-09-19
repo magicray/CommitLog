@@ -175,7 +175,7 @@ async def main():
     guid = uuid.UUID(re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}', sub)[0])
 
     G.log_id = str(guid)
-    G.logdir = f'commitlog-{G.log_id}'
+    G.logdir = os.path.join('commitlog', G.log_id)
 
     srv = await asyncio.start_server(server, None, port, ssl=SSL)
     async with srv:
