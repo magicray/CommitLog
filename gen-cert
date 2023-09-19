@@ -1,5 +1,0 @@
-#!/bin/bash
-
-openssl req -x509 -newkey rsa:4096 -nodes -sha256 -days 4000 \
-	    -subj "/CN=CommitLog $1" -keyout $1.pem -out $1.pem &&
-openssl x509 -in $1.pem -text -noout
