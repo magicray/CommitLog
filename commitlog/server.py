@@ -82,14 +82,13 @@ def read_server(meta, data):
     what, log_seq = meta
 
     path = get_logfile(log_seq)
+    if not os.path.isfile(path):
+        return 'NOTFOUND', None, None
 
-    if os.path.isfile(path):
-        with open(path, 'rb') as fd:
-            meta = json.loads(fd.readline())
+    with open(path, 'rb') as fd:
+        meta = json.loads(fd.readline())
 
-            return 'OK', meta, fd.read() if 'data' == what else None
-
-    return 'NOTFOUND', None, None
+        return 'OK', meta, fd.read() if 'data' == what else None
 
 
 def dump(path, *objects):
@@ -126,10 +125,8 @@ def paxos_server(meta, data):
         promised_seq = proposal_seq
         dump(promise_filepath, dict(promised_seq=promised_seq, uuid=uuid))
 
-    # paxos PROMISE phase
-    # Return the most recent accepted value.
-    # Client will take the most recent of these, across servers and
-    # propose that in the ACCEPT phase.
+    # PROMISE - Block stale leaders and return the most recent accepted value.
+    # Client will propose the most recent across servers in the accept phase
     if 'promise' == phase and proposal_seq == promised_seq and guid == uuid:
         # Most recent file in this log stream
         log_seq, filepath = max_file()
@@ -141,19 +138,20 @@ def paxos_server(meta, data):
         with open(filepath, 'rb') as fd:
             return 'OK', json.loads(fd.readline()), fd.read()
 
-    # paxos ACCEPT phase - only the most recent leader can reach this stage
+    # ACCEPT - Client has sent the most recent value from the promise phase.
+    # Stale leaders blocked. Only the most recent can reach this stage.
     if 'accept' == phase and proposal_seq == promised_seq and guid == uuid:
         log_seq, md5_prev = meta[2], meta[3]
 
-        hdr = dict(log_id=G.log_id, log_seq=log_seq, accepted_seq=proposal_seq,
-                   md5=hashlib.md5(data).hexdigest(),
-                   md5_prev=md5_prev, leader=uuid, length=len(data))
+        hdr = dict(log_id=G.log_id, leader=uuid, length=len(data),
+                   log_seq=log_seq, accepted_seq=proposal_seq,
+                   md5=hashlib.md5(data).hexdigest(), md5_prev=md5_prev)
 
         dump(get_logfile(log_seq), hdr, b'\n', data)
 
         return 'OK', hdr, None
 
-    return 'STALE_PROPOSAL_SEQ', meta, None
+    return 'STALE_PROPOSAL_SEQ', None, None
 
 
 class G:
@@ -172,6 +170,7 @@ async def main():
     SSL.load_cert_chain(cert, cert)
     SSL.verify_mode = ssl.CERT_REQUIRED
 
+    # Extract UUID from the subject. This would be the log_id for this stream
     sub = SSL.get_ca_certs()[0]['subject'][0][0][1]
     guid = uuid.UUID(re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}', sub)[0])
 

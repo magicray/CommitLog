@@ -26,10 +26,7 @@ class RPC():
             reader, writer = self.conns[server]
 
             if data and type(data) is not bytes:
-                try:
-                    data = json.dumps(data).encode()
-                except Exception as e:
-                    data = str(e).encode()
+                data = json.dumps(data).encode()
 
             length = len(data) if data else 0
 
@@ -138,8 +135,8 @@ class Client():
         raise Exception(f'NO_QUORUM log_seq({log_seq})')
 
     async def tail(self, seq, wait_sec=1):
+        md5 = None
         max_seq = seq
-        md5_prev = None
 
         while True:
             res = await self.rpc('logseq')
@@ -174,10 +171,10 @@ class Client():
                     continue
 
                 status, meta, data = result
-                if md5_prev and md5_prev != meta['md5_prev']:
-                    raise Exception(f'MD5_CHAIN_MISMATCH {seq} {md5_prev}')
+                if md5 and md5 != meta['md5_prev']:
+                    raise Exception(f'MD5_CHAIN_MISMATCH {seq} {md5}')
 
-                md5_prev = meta['md5']
+                md5 = meta['md5']
 
                 yield meta, data
                 seq = seq + 1
