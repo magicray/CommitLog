@@ -4,7 +4,7 @@ import asyncio
 import logging
 from logging import critical as log
 
-import commitlog.client
+import commitlog
 
 
 async def main():
@@ -15,7 +15,7 @@ async def main():
     servers = [argv.split(':') for argv in sys.argv[2:-1]]
     servers = [(ip, int(port)) for ip, port in servers]
 
-    client = commitlog.client.Client(cert, servers)
+    client = commitlog.Client(cert, servers)
 
     while True:
         async for meta, data in client.tail(seq):
