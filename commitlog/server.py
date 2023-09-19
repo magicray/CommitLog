@@ -101,9 +101,9 @@ def dump(path, *objects):
                 obj = json.dumps(obj, sort_keys=True).encode()
 
             fd.write(obj)
+            os.fsync(fd)
 
     os.replace(tmp, path)
-    os.sync()
 
 
 def paxos_server(meta, data):
