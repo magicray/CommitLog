@@ -13,5 +13,5 @@ def main():
     os.system(f'openssl x509 -in {guid}.pem -text -noout')
 
 
-if '__main__' ==  __name__:
+if '__main__' == __name__:
     main()
