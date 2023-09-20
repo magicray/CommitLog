@@ -107,28 +107,25 @@ def dump(path, *objects):
 
 
 def paxos_server(meta, data):
-    phase = 'promise' if 2 == len(meta) else 'accept'
-    proposal_seq, guid = meta[0], meta[1]
+    phase = 'promise' if 1 == len(meta) else 'accept'
+    proposal_seq = meta[0]
 
     promised_seq = 0
     promise_filepath = os.path.join(G.logdir, 'promised')
     if os.path.isfile(promise_filepath):
         with open(promise_filepath) as fd:
-            obj = json.load(fd)
-            uuid = obj['uuid']
-            promised_seq = obj['promised_seq']
+            promised_seq = json.load(fd)['promised_seq']
 
     # Accept the caller as the new leader as it sent the higher proposal_seq.
     # Any requests from older leaders would be rejected.
     if proposal_seq > promised_seq:
-        uuid = guid
         promised_seq = proposal_seq
-        dump(promise_filepath, dict(promised_seq=promised_seq, uuid=uuid))
+        dump(promise_filepath, dict(promised_seq=promised_seq))
 
     # PROMISE - Block stale leaders and return the most recent accepted value.
     # Client will propose the most recent across servers in the accept phase
-    if 'promise' == phase and proposal_seq == promised_seq and guid == uuid:
-        # Most recent file in this log stream
+    if 'promise' == phase and proposal_seq == promised_seq:
+        # Find the most recent record in this log stream
         log_seq, filepath = max_file()
 
         # Log stream does not yet exist
@@ -140,12 +137,25 @@ def paxos_server(meta, data):
 
     # ACCEPT - Client has sent the most recent value from the promise phase.
     # Stale leaders blocked. Only the most recent can reach this stage.
-    if 'accept' == phase and proposal_seq == promised_seq and guid == uuid:
-        log_seq, md5_prev = meta[2], meta[3]
+    if 'accept' == phase and proposal_seq == promised_seq:
+        log_seq, commit_id, md5_chain = meta[1], meta[2], meta[3]
 
-        hdr = dict(log_id=G.log_id, leader=uuid, length=len(data),
-                   log_seq=log_seq, accepted_seq=proposal_seq,
-                   md5=hashlib.md5(data).hexdigest(), md5_prev=md5_prev)
+        # Validate md5_chain before accepting any new write
+        if log_seq > 0:
+            prev_file = get_logfile(log_seq-1)
+            if os.path.isfile(prev_file):
+                with open(prev_file) as fd:
+                    obj = json.loads(fd.readline())
+                    obj.pop('accepted_seq')
+
+                md5 = json.dumps(obj, sort_keys=True).encode()
+                if md5_chain != hashlib.md5(md5).hexdigest():
+                    return 'INVALID_MD5_CHAIN', None, None
+                log('VALID_MD5_CHAIN')
+
+        hdr = dict(accepted_seq=proposal_seq, log_id=G.log_id, log_seq=log_seq,
+                   commit_id=commit_id, length=len(data), md5_chain=md5_chain,
+                   md5=hashlib.md5(data).hexdigest())
 
         dump(get_logfile(log_seq), hdr, b'\n', data)
 

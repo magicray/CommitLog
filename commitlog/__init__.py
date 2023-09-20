@@ -2,6 +2,7 @@ import ssl
 import json
 import time
 import uuid
+import hashlib
 import asyncio
 from logging import critical as log
 
@@ -64,12 +65,13 @@ class Client():
         self.leader = None
 
     async def commit(self, blob=None):
+        commit_id = str(uuid.uuid4())
+
         if self.leader is None and not blob:
             # paxos PROMISE phase - block stale leaders from writing
-            guid = str(uuid.uuid4())
             proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
-            res = await self.rpc('promise', [proposal_seq, guid])
+            res = await self.rpc('promise', [proposal_seq])
             if self.quorum > len(res):
                 raise Exception('NO_QUORUM')
 
@@ -80,16 +82,18 @@ class Client():
             if 1 == len(meta_set) and 0 != meta['log_seq']:
                 # Last log was written successfully to a majority
                 meta = json.loads(meta_set.pop())
+                meta.pop('accepted_seq')
+                m = json.dumps(meta, sort_keys=True).encode()
+                md5_chain = hashlib.md5(m).hexdigest()
+                log_seq = meta['log_seq']
 
-                log_seq, md5 = meta['log_seq'], meta['md5']
-
-                self.leader = [proposal_seq, guid, log_seq+1, md5]
+                self.leader = [proposal_seq, log_seq+1, md5_chain]
                 return meta
 
             # Default values if nothing is found in the PROMISE replies
-            md5 = str(uuid.uuid4())
-            blob = md5.encode()
-            log_seq = accepted_seq = 0
+            blob = commit_id.encode()
+            md5_chain = commit_id
+            log_seq, accepted_seq = 0, 0
 
             # This is the CRUX of the paxos protocol
             # Find the most recent log_seq with most recent accepted_seq
@@ -99,8 +103,10 @@ class Client():
                 new = meta['log_seq'], meta['accepted_seq']
 
                 if new > old:
-                    md5 = meta['md5_prev']
                     blob = data
+                    commit_id = meta['commit_id']
+                    md5_chain = meta['md5_chain']
+
                     log_seq = meta['log_seq']
                     accepted_seq = meta['accepted_seq']
 
@@ -109,34 +115,37 @@ class Client():
 
         if self.leader:
             # Take away leadership temporarily.
-            proposal_seq, guid, log_seq, md5 = self.leader
+            proposal_seq, log_seq, md5_chain = self.leader
             self.leader = None
 
         # paxos ACCEPT phase - write a new blob
         # Retry a few times to overcome temp failures
         for delay in (1, 1, 1, 1, 1, 0):
-            meta = [proposal_seq, guid, log_seq, md5]
+            meta = [proposal_seq, log_seq, commit_id, md5_chain]
             res = await self.rpc('accept', meta, blob)
 
             if self.quorum > len(res):
                 await asyncio.sleep(delay)
                 continue
 
-            meta = set([json.dumps(meta, sort_keys=True)
-                        for meta, data in res.values()])
+            meta_set = set([json.dumps(meta, sort_keys=True)
+                            for meta, data in res.values()])
 
             # Write successful. Reinstate as the leader.
-            if 1 == len(meta):
-                meta = json.loads(meta.pop())
-                self.leader = [proposal_seq, guid, log_seq+1, meta['md5']]
+            if 1 == len(meta_set):
+                meta = json.loads(meta_set.pop())
+                meta.pop('accepted_seq')
+                m = json.dumps(meta, sort_keys=True).encode()
+                md5_chain = hashlib.md5(m).hexdigest()
 
+                self.leader = [proposal_seq, log_seq+1, md5_chain]
                 return meta
 
         raise Exception(f'NO_QUORUM log_seq({log_seq})')
 
     async def tail(self, seq, wait_sec=1):
-        md5 = None
         max_seq = seq
+        md5_chain = None
 
         while True:
             res = await self.rpc('logseq')
@@ -171,10 +180,12 @@ class Client():
                     continue
 
                 status, meta, data = result
-                if md5 and md5 != meta['md5_prev']:
-                    raise Exception(f'MD5_CHAIN_MISMATCH {seq} {md5}')
+                if md5_chain and md5_chain != meta['md5_chain']:
+                    raise Exception(f'MD5_CHAIN_MISMATCH {seq} {md5_chain}')
 
-                md5 = meta['md5']
+                meta.pop('accepted_seq')
+                m = json.dumps(meta, sort_keys=True).encode()
+                md5_chain = hashlib.md5(m).hexdigest()
 
                 yield meta, data
                 seq = seq + 1
