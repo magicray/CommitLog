@@ -8,6 +8,7 @@ import hashlib
 import asyncio
 import logging
 import traceback
+import commitlog
 from logging import critical as log
 
 
@@ -101,7 +102,6 @@ def dump(path, *objects):
                 obj = json.dumps(obj, sort_keys=True).encode()
 
             fd.write(obj)
-            os.fsync(fd)
 
     os.replace(tmp, path)
 
@@ -141,17 +141,13 @@ def paxos_server(meta, data):
         log_seq, commit_id, md5_chain = meta[1], meta[2], meta[3]
 
         # Validate md5_chain before accepting any new write
-        if log_seq > 0:
-            prev_file = get_logfile(log_seq-1)
-            if os.path.isfile(prev_file):
-                with open(prev_file) as fd:
-                    obj = json.loads(fd.readline())
-                    obj.pop('accepted_seq')
+        prev_file = get_logfile(log_seq-1)
+        if os.path.isfile(prev_file):
+            with open(prev_file) as fd:
+                obj = json.loads(fd.readline())
 
-                md5 = json.dumps(obj, sort_keys=True).encode()
-                if md5_chain != hashlib.md5(md5).hexdigest():
-                    return 'INVALID_MD5_CHAIN', None, None
-                log('VALID_MD5_CHAIN')
+            if md5_chain != commitlog.hdr_checksum(obj):
+                raise Exception('INVALID_MD5_CHAIN')
 
         hdr = dict(accepted_seq=proposal_seq, log_id=G.log_id, log_seq=log_seq,
                    commit_id=commit_id, length=len(data), md5_chain=md5_chain,

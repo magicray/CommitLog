@@ -2,9 +2,8 @@ import sys
 import json
 import asyncio
 import logging
-from logging import critical as log
-
 import commitlog
+from logging import critical as log
 
 
 async def main():

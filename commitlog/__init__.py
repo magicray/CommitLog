@@ -58,6 +58,12 @@ class RPC():
                 if type(r) is tuple and 'OK' == r[0]}
 
 
+def hdr_checksum(hdr):
+    h = hdr.copy()
+    h.pop('accepted_seq')
+    return hashlib.md5(json.dumps(h, sort_keys=True).encode()).hexdigest()
+
+
 class Client():
     def __init__(self, cert, servers):
         self.rpc = RPC(cert, servers)
@@ -82,10 +88,8 @@ class Client():
             if 1 == len(meta_set) and 0 != meta['log_seq']:
                 # Last log was written successfully to a majority
                 meta = json.loads(meta_set.pop())
-                meta.pop('accepted_seq')
-                m = json.dumps(meta, sort_keys=True).encode()
-                md5_chain = hashlib.md5(m).hexdigest()
                 log_seq = meta['log_seq']
+                md5_chain = hdr_checksum(meta)
 
                 self.leader = [proposal_seq, log_seq+1, md5_chain]
                 return meta
@@ -134,9 +138,7 @@ class Client():
             # Write successful. Reinstate as the leader.
             if 1 == len(meta_set):
                 meta = json.loads(meta_set.pop())
-                meta.pop('accepted_seq')
-                m = json.dumps(meta, sort_keys=True).encode()
-                md5_chain = hashlib.md5(m).hexdigest()
+                md5_chain = hdr_checksum(meta)
 
                 self.leader = [proposal_seq, log_seq+1, md5_chain]
                 return meta
@@ -183,9 +185,7 @@ class Client():
                 if md5_chain and md5_chain != meta['md5_chain']:
                     raise Exception(f'MD5_CHAIN_MISMATCH {seq} {md5_chain}')
 
-                meta.pop('accepted_seq')
-                m = json.dumps(meta, sort_keys=True).encode()
-                md5_chain = hashlib.md5(m).hexdigest()
+                md5_chain = hdr_checksum(meta)
 
                 yield meta, data
                 seq = seq + 1
