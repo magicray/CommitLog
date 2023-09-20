@@ -132,11 +132,12 @@ class Client():
                 await asyncio.sleep(delay)
                 continue
 
+            chain = [data.decode() for meta, data in res.values()]
             meta_set = set([json.dumps(meta, sort_keys=True)
                             for meta, data in res.values()])
 
             # Write successful. Reinstate as the leader.
-            if 1 == len(meta_set):
+            if 1 == len(meta_set) and 'VALID' in chain:
                 meta = json.loads(meta_set.pop())
                 md5_chain = hdr_checksum(meta)
 

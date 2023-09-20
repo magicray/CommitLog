@@ -140,6 +140,8 @@ def paxos_server(meta, data):
     if 'accept' == phase and proposal_seq == promised_seq:
         log_seq, commit_id, md5_chain = meta[1], meta[2], meta[3]
 
+        chain = 'VALID' if 0 == log_seq else 'INVALID'
+
         # Validate md5_chain before accepting any new write
         prev_file = get_logfile(log_seq-1)
         if os.path.isfile(prev_file):
@@ -149,13 +151,15 @@ def paxos_server(meta, data):
             if md5_chain != commitlog.hdr_checksum(obj):
                 raise Exception('INVALID_MD5_CHAIN')
 
+            chain = 'VALID'
+
         hdr = dict(accepted_seq=proposal_seq, log_id=G.log_id, log_seq=log_seq,
                    commit_id=commit_id, length=len(data), md5_chain=md5_chain,
                    md5=hashlib.md5(data).hexdigest())
 
         dump(get_logfile(log_seq), hdr, b'\n', data)
 
-        return 'OK', hdr, None
+        return 'OK', hdr, chain.encode()
 
     return 'STALE_PROPOSAL_SEQ', None, None
 
