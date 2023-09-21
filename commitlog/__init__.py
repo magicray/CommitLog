@@ -110,8 +110,8 @@ class Client():
             self.leader = None
 
         # paxos ACCEPT phase - write a new blob
-        # Retry a few times to overcome temp failures
-        for delay in (1, 1, 1, 1, 1, 0):
+        # Ignore tmep failure and retry a few times
+        for delay in (1, 1, 1, 1, 0):
             meta = [proposal_seq, log_seq, commit_id]
             res = await self.rpc('accept', meta, blob)
 
@@ -156,16 +156,10 @@ class Client():
                         srv = server
                         accepted_seq = res[0]['accepted_seq']
 
-                if not srv:
-                    await asyncio.sleep(wait_sec)
-                    continue
-
                 result = await self.rpc.rpc(srv, 'read', ['data', seq])
                 if not result or 'OK' != result[0]:
                     await asyncio.sleep(wait_sec)
                     continue
 
-                status, meta, data = result
-
-                yield meta, data
+                yield result[1], result[2]
                 seq = seq + 1
