@@ -139,14 +139,11 @@ def paxos_server(meta, data):
         if proposal_seq > promised_seq:
             dump(promise_filepath, dict(promised_seq=proposal_seq))
 
-        log_seq, commit_id = meta[1], meta[2]
+        hdr = dict(accepted_seq=proposal_seq, log_id=G.log_id,
+                   log_seq=meta[1], commit_id=meta[2],
+                   length=len(data), md5=hashlib.md5(data).hexdigest())
 
-        hdr = dict(accepted_seq=proposal_seq,
-                   log_id=G.log_id, log_seq=log_seq,
-                   commit_id=commit_id, length=len(data),
-                   md5=hashlib.md5(data).hexdigest())
-
-        dump(get_logfile(log_seq), hdr, b'\n', data)
+        dump(get_logfile(hdr['log_seq']), hdr, b'\n', data)
 
         return 'OK', hdr, None
 
