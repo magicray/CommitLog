@@ -104,6 +104,9 @@ def dump(path, *objects):
 
     os.replace(tmp, path)
 
+    # Write everything to disk
+    os.sync()
+
 
 def paxos_server(meta, data):
     phase = 'promise' if 1 == len(meta) else 'accept'
