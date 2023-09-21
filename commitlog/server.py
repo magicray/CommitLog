@@ -118,15 +118,11 @@ def paxos_server(meta, data):
         with open(promise_filepath) as fd:
             promised_seq = json.load(fd)['promised_seq']
 
-    # Accept the caller as the new leader as it sent the higher proposal_seq.
-    # Any requests from older leaders would be rejected.
-    if proposal_seq > promised_seq:
-        promised_seq = proposal_seq
-        dump(promise_filepath, dict(promised_seq=promised_seq))
-
     # PROMISE - Block stale leaders and return the most recent accepted value.
     # Client will propose the most recent across servers in the accept phase
-    if 'promise' == phase and proposal_seq == promised_seq:
+    if 'promise' == phase and proposal_seq > promised_seq:
+        dump(promise_filepath, dict(promised_seq=proposal_seq))
+
         # Find the most recent record in this log stream
         log_seq, filepath = max_file()
 
@@ -139,7 +135,10 @@ def paxos_server(meta, data):
 
     # ACCEPT - Client has sent the most recent value from the promise phase.
     # Stale leaders blocked. Only the most recent can reach this stage.
-    if 'accept' == phase and proposal_seq == promised_seq:
+    if 'accept' == phase and proposal_seq >= promised_seq:
+        if proposal_seq > promised_seq:
+            dump(promise_filepath, dict(promised_seq=proposal_seq))
+
         log_seq, commit_id = meta[1], meta[2]
 
         hdr = dict(accepted_seq=proposal_seq,
