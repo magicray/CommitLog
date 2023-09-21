@@ -8,7 +8,6 @@ import hashlib
 import asyncio
 import logging
 import traceback
-import commitlog
 from logging import critical as log
 
 
@@ -138,28 +137,16 @@ def paxos_server(meta, data):
     # ACCEPT - Client has sent the most recent value from the promise phase.
     # Stale leaders blocked. Only the most recent can reach this stage.
     if 'accept' == phase and proposal_seq == promised_seq:
-        log_seq, commit_id, md5_chain = meta[1], meta[2], meta[3]
+        log_seq, commit_id = meta[1], meta[2]
 
-        chain = 'VALID' if 0 == log_seq else 'INVALID'
-
-        # Validate md5_chain before accepting any new write
-        prev_file = get_logfile(log_seq-1)
-        if os.path.isfile(prev_file):
-            with open(prev_file) as fd:
-                obj = json.loads(fd.readline())
-
-            if md5_chain != commitlog.hdr_checksum(obj):
-                raise Exception('INVALID_MD5_CHAIN')
-
-            chain = 'VALID'
-
-        hdr = dict(accepted_seq=proposal_seq, log_id=G.log_id, log_seq=log_seq,
-                   commit_id=commit_id, length=len(data), md5_chain=md5_chain,
+        hdr = dict(accepted_seq=proposal_seq,
+                   log_id=G.log_id, log_seq=log_seq,
+                   commit_id=commit_id, length=len(data),
                    md5=hashlib.md5(data).hexdigest())
 
         dump(get_logfile(log_seq), hdr, b'\n', data)
 
-        return 'OK', hdr, chain.encode()
+        return 'OK', hdr, None
 
     return 'STALE_PROPOSAL_SEQ', None, None
 

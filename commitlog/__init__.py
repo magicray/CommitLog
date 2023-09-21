@@ -2,7 +2,6 @@ import ssl
 import json
 import time
 import uuid
-import hashlib
 import asyncio
 from logging import critical as log
 
@@ -58,12 +57,6 @@ class RPC():
                 if type(r) is tuple and 'OK' == r[0]}
 
 
-def hdr_checksum(hdr):
-    h = hdr.copy()
-    h.pop('accepted_seq')
-    return hashlib.md5(json.dumps(h, sort_keys=True).encode()).hexdigest()
-
-
 class Client():
     def __init__(self, cert, servers):
         self.rpc = RPC(cert, servers)
@@ -88,15 +81,11 @@ class Client():
             if 1 == len(meta_set) and 0 != meta['log_seq']:
                 # Last log was written successfully to a majority
                 meta = json.loads(meta_set.pop())
-                log_seq = meta['log_seq']
-                md5_chain = hdr_checksum(meta)
-
-                self.leader = [proposal_seq, log_seq+1, md5_chain]
+                self.leader = [proposal_seq, meta['log_seq']+1]
                 return meta
 
             # Default values if nothing is found in the PROMISE replies
             blob = commit_id.encode()
-            md5_chain = commit_id
             log_seq, accepted_seq = 0, 0
 
             # This is the CRUX of the paxos protocol
@@ -108,10 +97,8 @@ class Client():
 
                 if new > old:
                     blob = data
-                    commit_id = meta['commit_id']
-                    md5_chain = meta['md5_chain']
-
                     log_seq = meta['log_seq']
+                    commit_id = meta['commit_id']
                     accepted_seq = meta['accepted_seq']
 
         if not blob:
@@ -119,36 +106,32 @@ class Client():
 
         if self.leader:
             # Take away leadership temporarily.
-            proposal_seq, log_seq, md5_chain = self.leader
+            proposal_seq, log_seq = self.leader
             self.leader = None
 
         # paxos ACCEPT phase - write a new blob
         # Retry a few times to overcome temp failures
         for delay in (1, 1, 1, 1, 1, 0):
-            meta = [proposal_seq, log_seq, commit_id, md5_chain]
+            meta = [proposal_seq, log_seq, commit_id]
             res = await self.rpc('accept', meta, blob)
 
             if self.quorum > len(res):
                 await asyncio.sleep(delay)
                 continue
 
-            chain = [data.decode() for meta, data in res.values()]
             meta_set = set([json.dumps(meta, sort_keys=True)
                             for meta, data in res.values()])
 
             # Write successful. Reinstate as the leader.
-            if 1 == len(meta_set) and 'VALID' in chain:
+            if 1 == len(meta_set):
                 meta = json.loads(meta_set.pop())
-                md5_chain = hdr_checksum(meta)
-
-                self.leader = [proposal_seq, log_seq+1, md5_chain]
+                self.leader = [proposal_seq, meta['log_seq']+1]
                 return meta
 
         raise Exception(f'NO_QUORUM log_seq({log_seq})')
 
     async def tail(self, seq, wait_sec=1):
         max_seq = seq
-        md5_chain = None
 
         while True:
             res = await self.rpc('logseq')
@@ -183,10 +166,6 @@ class Client():
                     continue
 
                 status, meta, data = result
-                if md5_chain and md5_chain != meta['md5_chain']:
-                    raise Exception(f'MD5_CHAIN_MISMATCH {seq} {md5_chain}')
-
-                md5_chain = hdr_checksum(meta)
 
                 yield meta, data
                 seq = seq + 1
