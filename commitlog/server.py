@@ -4,6 +4,7 @@ import sys
 import ssl
 import json
 import uuid
+import shutil
 import hashlib
 import asyncio
 import logging
@@ -54,7 +55,7 @@ async def server(reader, writer):
 
 
 def get_logfile(log_seq):
-    l1, l2, = log_seq//1000000, log_seq//1000
+    l1, l2, = log_seq//(G.fanout**2), log_seq//G.fanout
     return os.path.join(G.logdir, str(l1), str(l2), str(log_seq))
 
 
@@ -94,7 +95,7 @@ def read_server(meta, data):
 def dump(path, *objects):
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
-    tmp = path + '.' + str(uuid.uuid4()) + '.tmp'
+    tmp = os.path.join(G.tmpdir, str(uuid.uuid4()))
     with open(tmp, 'wb') as fd:
         for obj in objects:
             if type(obj) is not bytes:
@@ -103,8 +104,6 @@ def dump(path, *objects):
             fd.write(obj)
 
     os.replace(tmp, path)
-
-    # Write everything to disk
     os.sync()
 
 
@@ -153,6 +152,8 @@ def paxos_server(meta, data):
 class G:
     log_id = None
     logdir = None
+    tmpdir = None
+    fanout = 50
 
 
 async def main():
@@ -172,6 +173,16 @@ async def main():
 
     G.log_id = str(guid)
     G.logdir = os.path.join('commitlog', G.log_id)
+    G.tmpdir = os.path.join(G.logdir, 'tmp')
+
+    os.makedirs(G.tmpdir, exist_ok=True)
+
+    dir_list = [int(d) for d in os.listdir(G.logdir) if d.isdigit()]
+    if dir_list:
+        tmp_dir = os.path.join(G.logdir, 'tmp', str(uuid.uuid4()))
+        for p in range(min(dir_list), max(dir_list)-10):
+            os.makedirs(tmp_dir, exist_ok=True)
+            shutil.move(G.tmpdir, tmp_dir)
 
     srv = await asyncio.start_server(server, None, port, ssl=SSL)
     async with srv:
