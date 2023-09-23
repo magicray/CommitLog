@@ -26,28 +26,28 @@ async def server(reader, writer):
                     return writer.close()
 
                 req = req.decode().strip()
-                cmd, meta, length = json.loads(req)
+                method, header, length = json.loads(req)
             except Exception:
                 log(f'{peer} disconnected or invalid header')
                 return writer.close()
 
-            if cmd not in HANDLERS:
+            if method not in HANDLERS:
                 log(f'{peer} invalid command {req}')
                 return writer.close()
 
-            status, meta, data = HANDLERS[cmd](
-                meta, await reader.readexactly(length))
+            status, header, body = HANDLERS[method](
+                header, await reader.readexactly(length))
 
-            length = len(data) if data else 0
-            res = json.dumps([status, meta, length])
+            length = len(body) if body else 0
+            res = json.dumps([status, header, length])
 
             writer.write(res.encode())
             writer.write(b'\n')
             if length > 0:
-                writer.write(data)
+                writer.write(body)
 
             await writer.drain()
-            log(f'{peer} {cmd}:{status} {req} {res}')
+            log(f'{peer} {method}:{status} {req} {res}')
         except Exception as e:
             traceback.print_exc()
             log(f'{peer} FATAL({e})')
@@ -75,21 +75,21 @@ def max_file():
     return 0, None
 
 
-def logseq_server(meta, data):
+def logseq_server(header, body):
     return 'OK', max_file()[0], None
 
 
-def read_server(meta, data):
-    what, log_seq = meta
+def read_server(header, body):
+    what, log_seq = header
 
     path = get_logfile(log_seq)
     if not os.path.isfile(path):
         return 'NOTFOUND', None, None
 
     with open(path, 'rb') as fd:
-        meta = json.loads(fd.readline())
+        header = json.loads(fd.readline())
 
-        return 'OK', meta, fd.read() if 'data' == what else None
+        return 'OK', header, fd.read() if 'data' == what else None
 
 
 def dump(path, *objects):
@@ -107,9 +107,9 @@ def dump(path, *objects):
     os.sync()
 
 
-def paxos_server(meta, data):
-    phase = 'promise' if 1 == len(meta) else 'accept'
-    proposal_seq = meta[0]
+def paxos_server(header, body):
+    phase = 'promise' if 1 == len(header) else 'accept'
+    proposal_seq = header[0]
 
     promised_seq = 0
     promise_filepath = os.path.join(G.logdir, 'promised')
@@ -138,13 +138,13 @@ def paxos_server(meta, data):
         if proposal_seq > promised_seq:
             dump(promise_filepath, dict(promised_seq=proposal_seq))
 
-        hdr = dict(accepted_seq=proposal_seq, log_id=G.log_id,
-                   log_seq=meta[1], commit_id=meta[2],
-                   length=len(data), md5=hashlib.md5(data).hexdigest())
+        header = dict(accepted_seq=proposal_seq, log_id=G.log_id,
+                      log_seq=header[1], commit_id=header[2],
+                      length=len(body), md5=hashlib.md5(body).hexdigest())
 
-        dump(get_logfile(hdr['log_seq']), hdr, b'\n', data)
+        dump(get_logfile(header['log_seq']), header, b'\n', body)
 
-        return 'OK', hdr, None
+        return 'OK', header, None
 
     return 'STALE_PROPOSAL_SEQ', None, None
 
@@ -179,6 +179,8 @@ async def main():
 
     dir_list = [int(d) for d in os.listdir(G.logdir) if d.isdigit()]
     if dir_list:
+        # Reclaim space by removing old log records
+        # Retain only most recent 10 Million records
         tmp_dir = os.path.join(G.logdir, 'tmp', str(uuid.uuid4()))
         for p in range(min(dir_list), max(dir_list)-10):
             os.makedirs(tmp_dir, exist_ok=True)

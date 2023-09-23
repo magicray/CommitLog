@@ -17,7 +17,7 @@ class RPC():
 
         self.conns = {srv: (None, None) for srv in servers}
 
-    async def rpc(self, server, cmd, meta=None, data=b''):
+    async def rpc(self, server, method, header=None, body=b''):
         try:
             if self.conns[server][0] is None or self.conns[server][1] is None:
                 self.conns[server] = await asyncio.open_connection(
@@ -25,20 +25,20 @@ class RPC():
 
             reader, writer = self.conns[server]
 
-            if data and type(data) is not bytes:
-                data = json.dumps(data).encode()
+            if body and type(body) is not bytes:
+                body = json.dumps(body).encode()
 
-            length = len(data) if data else 0
+            length = len(body) if body else 0
 
-            writer.write(json.dumps([cmd, meta, length]).encode())
+            writer.write(json.dumps([method, header, length]).encode())
             writer.write(b'\n')
             if length > 0:
-                writer.write(data)
+                writer.write(body)
             await writer.drain()
 
-            status, meta, length = json.loads(await reader.readline())
+            status, header, length = json.loads(await reader.readline())
 
-            return status, meta, await reader.readexactly(length)
+            return status, header, await reader.readexactly(length)
         except Exception as e:
             log(e)
             if self.conns[server][1] is not None:
@@ -46,11 +46,11 @@ class RPC():
 
             self.conns[server] = None, None, None
 
-    async def __call__(self, cmd, meta=None, data=b''):
+    async def __call__(self, method, header=None, body=b''):
         servers = self.conns.keys()
 
         res = await asyncio.gather(
-            *[self.rpc(s, cmd, meta, data) for s in servers],
+            *[self.rpc(s, method, header, body) for s in servers],
             return_exceptions=True)
 
         return {s: (r[1], r[2]) for s, r in zip(servers, res)
@@ -151,15 +151,15 @@ class Client():
 
                 hdrs = list()
                 for k, v in res.items():
-                    r = v[0].copy()
-                    hdrs.append((r.pop('accepted_seq'),
-                                 json.dumps(r, sort_keys=True),
-                                 k))
+                    hdrs.append((
+                        v[0].pop('accepted_seq'),          # accepted seq
+                        json.dumps(v[0], sort_keys=True),  # record metadata
+                        k))                                # server
 
                 hdrs = sorted(hdrs, reverse=True)
-                hdr = hdrs[0][1]
+                latest = hdrs[0][1]
                 for i in range(self.quorum):
-                    if hdr != hdrs[i][1]:
+                    if latest != hdrs[i][1]:
                         raise Exception('CORRUPT_RECORD', hdrs)
 
                 result = await self.rpc.rpc(hdrs[0][2], 'read', ['data', seq])
