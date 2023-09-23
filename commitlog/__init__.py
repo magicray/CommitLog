@@ -149,17 +149,27 @@ class Client():
                     await asyncio.sleep(wait_sec)
                     continue
 
-                srv = None
-                accepted_seq = 0
-                for server, res in res.items():
-                    if res[0]['accepted_seq'] > accepted_seq:
-                        srv = server
-                        accepted_seq = res[0]['accepted_seq']
+                hdrs = list()
+                for k, v in res.items():
+                    r = v[0].copy()
+                    hdrs.append((r.pop('accepted_seq'),
+                                 json.dumps(r, sort_keys=True),
+                                 k))
 
-                result = await self.rpc.rpc(srv, 'read', ['data', seq])
+                hdrs = sorted(hdrs, reverse=True)
+                hdr = hdrs[0][1]
+                for i in range(self.quorum):
+                    if hdr != hdrs[i][1]:
+                        raise Exception('CORRUPT_RECORD', hdrs)
+
+                result = await self.rpc.rpc(hdrs[0][2], 'read', ['data', seq])
                 if not result or 'OK' != result[0]:
                     await asyncio.sleep(wait_sec)
                     continue
 
-                yield result[1], result[2]
+                result[1].pop('accepted_seq')
+                assert (hdrs[0][1] == json.dumps(result[1], sort_keys=True))
+                result[1]['blob'] = result[2]
+
+                yield result[1]
                 seq = seq + 1

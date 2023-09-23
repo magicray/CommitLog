@@ -17,12 +17,10 @@ async def main():
     client = commitlog.Client(cert, servers)
 
     while True:
-        async for meta, data in client.tail(seq):
-            assert len(data) == meta['length']
-
-            log(json.dumps(meta, indent=4, sort_keys=True))
-
-            seq = meta['log_seq'] + 1
+        async for r in client.tail(seq):
+            r.pop('blob')
+            log(json.dumps(r, indent=4, sort_keys=True))
+            seq = r['log_seq'] + 1
 
         await asyncio.sleep(1)
 
