@@ -140,10 +140,10 @@ class Client():
                 continue
 
             max_seq = max([v[0] for v in res.values()])
-            if seq >= max_seq:
+            if seq > max_seq:
                 return
 
-            while seq < max_seq:
+            while seq <= max_seq:
                 res = await self.rpc('read', ['meta', seq])
                 if self.quorum > len(res):
                     await asyncio.sleep(wait_sec)
@@ -160,7 +160,9 @@ class Client():
                 latest = hdrs[0][1]
                 for i in range(self.quorum):
                     if latest != hdrs[i][1]:
-                        raise Exception('CORRUPT_RECORD', hdrs)
+                        log('NOT_YET_FINALIZED', json.dumps(hdrs, indent=4))
+                        await asyncio.sleep(wait_sec)
+                        continue
 
                 result = await self.rpc.rpc(hdrs[0][2], 'read', ['data', seq])
                 if not result or 'OK' != result[0]:
