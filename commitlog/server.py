@@ -55,7 +55,7 @@ async def server(reader, writer):
 
 
 def get_logfile(log_seq):
-    l1, l2, = log_seq//100000, log_seq//1000
+    l1, l2 = log_seq//100000, log_seq//1000
     return os.path.join(G.logdir, str(l1), str(l2), str(log_seq))
 
 
