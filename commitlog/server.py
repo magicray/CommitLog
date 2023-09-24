@@ -95,7 +95,7 @@ def read_server(header, body):
 def dump(path, *objects):
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
-    tmp = os.path.join(G.tmpdir, str(uuid.uuid4()))
+    tmp = os.path.join(G.logdir, str(uuid.uuid4()) + '.tmp')
     with open(tmp, 'wb') as fd:
         for obj in objects:
             if type(obj) is not bytes:
@@ -135,11 +135,20 @@ def paxos_server(header, body):
     # ACCEPT - Client has sent the most recent value from the promise phase.
     # Stale leaders blocked. Only the most recent can reach this stage.
     if 'accept' == phase and proposal_seq >= promised_seq:
+        log_seq, commit_id = header[1], header[2]
+
+        # Continuous cleanup - remove an older file before writing a new one
+        # Retain only the most recent 10 Million log records
+        old_log_record = get_logfile(log_seq - 10*G.fanout*G.fanout)
+        if os.path.isfile(old_log_record):
+            os.remove(old_log_record)
+            log(f'removed old record log_seq({old_log_record})')
+
         if proposal_seq > promised_seq:
             dump(promise_filepath, dict(promised_seq=proposal_seq))
 
         header = dict(accepted_seq=proposal_seq, log_id=G.log_id,
-                      log_seq=header[1], commit_id=header[2],
+                      log_seq=log_seq, commit_id=commit_id,
                       length=len(body), md5=hashlib.md5(body).hexdigest())
 
         dump(get_logfile(header['log_seq']), header, b'\n', body)
@@ -152,8 +161,7 @@ def paxos_server(header, body):
 class G:
     log_id = None
     logdir = None
-    tmpdir = None
-    fanout = 50
+    fanout = 10
 
 
 async def main():
@@ -173,18 +181,26 @@ async def main():
 
     G.log_id = str(guid)
     G.logdir = os.path.join('commitlog', G.log_id)
-    G.tmpdir = os.path.join(G.logdir, 'tmp')
+    os.makedirs(G.logdir, exist_ok=True)
 
-    os.makedirs(G.tmpdir, exist_ok=True)
+    tmp = [int(d) for d in os.listdir(G.logdir) if d.isdigit()]
+    max_dir = max(tmp) if tmp else 0
 
-    dir_list = [int(d) for d in os.listdir(G.logdir) if d.isdigit()]
-    if dir_list:
-        # Reclaim space by removing old log records
-        # Retain only most recent 10 Million records
-        tmp_dir = os.path.join(G.logdir, 'tmp', str(uuid.uuid4()))
-        for p in range(min(dir_list), max(dir_list)-10):
-            os.makedirs(tmp_dir, exist_ok=True)
-            shutil.move(G.tmpdir, tmp_dir)
+    # Cleanup
+    for f in os.listdir(G.logdir):
+        if 'promised' == f:
+            continue
+
+        path = os.path.join(G.logdir, str(f))
+
+        if f.isdigit():
+            if int(f) < max_dir - 10:
+                shutil.rmtree(path)
+        else:
+            if os.path.isfile(path):
+                os.remove(path)
+            else:
+                shutil.rmtree(path)
 
     srv = await asyncio.start_server(server, None, port, ssl=SSL)
     async with srv:
