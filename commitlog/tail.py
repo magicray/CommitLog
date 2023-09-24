@@ -42,7 +42,7 @@ async def main():
                   SSL.get_ca_certs()[0]['subject'][0][0][1])[0])))
     os.makedirs(logdir, exist_ok=True)
 
-    servers = [argv.split(':') for argv in sys.argv[2:-1]]
+    servers = [argv.split(':') for argv in sys.argv[2:]]
     servers = [(ip, int(port)) for ip, port in servers]
 
     seq = max_seq(logdir) + 1

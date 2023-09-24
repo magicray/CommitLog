@@ -55,7 +55,7 @@ async def server(reader, writer):
 
 
 def get_logfile(log_seq):
-    l1, l2, = log_seq//(G.fanout**2), log_seq//G.fanout
+    l1, l2, = log_seq//100000, log_seq//1000
     return os.path.join(G.logdir, str(l1), str(l2), str(log_seq))
 
 
@@ -138,8 +138,8 @@ def paxos_server(header, body):
         log_seq, commit_id = header[1], header[2]
 
         # Continuous cleanup - remove an older file before writing a new one
-        # Retain only the most recent 10 Million log records
-        old_log_record = get_logfile(log_seq - 10*G.fanout*G.fanout)
+        # Retain only the most recent 1 million log records
+        old_log_record = get_logfile(log_seq - 1000*1000)
         if os.path.isfile(old_log_record):
             os.remove(old_log_record)
             log(f'removed old record log_seq({old_log_record})')
@@ -161,7 +161,6 @@ def paxos_server(header, body):
 class G:
     log_id = None
     logdir = None
-    fanout = 10
 
 
 async def main():
