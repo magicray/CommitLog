@@ -171,7 +171,6 @@ class Client():
 
                 result[1].pop('accepted_seq')
                 assert (hdrs[0][1] == json.dumps(result[1], sort_keys=True))
-                result[1]['blob'] = result[2]
 
-                yield result[1]
+                yield result[1], result[2]
                 seq = seq + 1
