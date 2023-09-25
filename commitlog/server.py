@@ -89,7 +89,7 @@ def read_server(header, body):
     with open(path, 'rb') as fd:
         header = json.loads(fd.readline())
 
-        return 'OK', header, fd.read() if 'data' == what else None
+        return 'OK', header, fd.read() if 'body' == what else None
 
 
 def dump(path, *objects):

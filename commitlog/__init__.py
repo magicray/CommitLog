@@ -140,11 +140,9 @@ class Client():
                 continue
 
             max_seq = max([v[0] for v in res.values()])
-            if seq > max_seq:
-                return
 
             while seq <= max_seq:
-                res = await self.rpc('read', ['meta', seq])
+                res = await self.rpc('read', ['header', seq])
                 if self.quorum > len(res):
                     await asyncio.sleep(wait_sec)
                     continue
@@ -164,7 +162,7 @@ class Client():
                         await asyncio.sleep(wait_sec)
                         continue
 
-                result = await self.rpc.rpc(hdrs[0][2], 'read', ['data', seq])
+                result = await self.rpc.rpc(hdrs[0][2], 'read', ['body', seq])
                 if not result or 'OK' != result[0]:
                     await asyncio.sleep(wait_sec)
                     continue
@@ -174,3 +172,5 @@ class Client():
 
                 yield result[1], result[2]
                 seq = seq + 1
+
+            await asyncio.sleep(wait_sec)
