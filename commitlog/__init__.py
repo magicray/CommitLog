@@ -65,68 +65,62 @@ class Client():
 
     async def commit(self, blob=None):
         commit_id = str(uuid.uuid4())
+        proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
         if self.leader is None and not blob:
             # paxos PROMISE phase - block stale leaders from writing
-            proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
-
             res = await self.rpc('promise', [proposal_seq])
             if self.quorum > len(res):
                 raise Exception('NO_QUORUM')
 
-            meta_set = set()
-            for meta, data in res.values():
-                meta_set.add(json.dumps(meta, sort_keys=True))
+            headers = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
 
-            if 1 == len(meta_set) and 0 != meta['log_seq']:
-                # Last log was written successfully to a majority
-                meta = json.loads(meta_set.pop())
-                self.leader = [proposal_seq, meta['log_seq']+1]
-                return meta
+            if 1 == len(headers):
+                header = json.loads(headers.pop())
+                if 0 != header['log_seq']:
+                    self.leader = [proposal_seq, header['log_seq'] + 1]
+                    return header
 
             # Default values if nothing is found in the PROMISE replies
-            blob = commit_id.encode()
-            log_seq, accepted_seq = 0, 0
+            log_seq, accepted_seq, blob = 0, 0, commit_id.encode()
 
             # This is the CRUX of the paxos protocol
             # Find the most recent log_seq with most recent accepted_seq
             # Only this value should be proposed, else everything breaks
-            for meta, data in res.values():
+            for header, body in res.values():
                 old = log_seq, accepted_seq
-                new = meta['log_seq'], meta['accepted_seq']
+                new = header['log_seq'], header['accepted_seq']
 
                 if new > old:
-                    blob = data
-                    log_seq = meta['log_seq']
-                    commit_id = meta['commit_id']
-                    accepted_seq = meta['accepted_seq']
+                    blob = body
+                    log_seq = header['log_seq']
+                    commit_id = header['commit_id']
+                    accepted_seq = header['accepted_seq']
 
         if not blob:
             raise Exception(f'EMPTY_BLOB log_seq({log_seq})')
 
         if self.leader:
             # Take away leadership temporarily.
-            proposal_seq, log_seq = self.leader
-            self.leader = None
+            (proposal_seq, log_seq), self.leader = self.leader, None
 
         # paxos ACCEPT phase - write a new blob
         # Ignore tmep failure and retry a few times
         for delay in (1, 1, 1, 1, 0):
-            meta = [proposal_seq, log_seq, commit_id]
-            res = await self.rpc('accept', meta, blob)
+            header = [proposal_seq, log_seq, commit_id]
+            res = await self.rpc('accept', header, blob)
 
             if self.quorum > len(res):
                 await asyncio.sleep(delay)
                 continue
 
-            meta_set = set([json.dumps(meta, sort_keys=True)
-                            for meta, data in res.values()])
+            headers = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
 
             # Write successful. Reinstate as the leader.
-            if 1 == len(meta_set):
-                meta = json.loads(meta_set.pop())
-                self.leader = [proposal_seq, meta['log_seq']+1]
-                return meta
+            if 1 == len(headers):
+                header = json.loads(headers.pop())
+                self.leader = [proposal_seq, header['log_seq'] + 1]
+                return header
 
         raise Exception(f'NO_QUORUM log_seq({log_seq})')
 

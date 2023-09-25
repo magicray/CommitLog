@@ -152,7 +152,7 @@ def paxos_server(header, body):
 
         header = dict(accepted_seq=proposal_seq, log_id=G.log_id,
                       log_seq=log_seq, commit_id=commit_id,
-                      length=len(body), md5=hashlib.md5(body).hexdigest())
+                      length=len(body), sha1=hashlib.sha1(body).hexdigest())
 
         dump(seq2path(header['log_seq']), header, b'\n', body)
 
@@ -185,8 +185,7 @@ async def main():
     G.logdir = os.path.join('commitlog', G.log_id)
     os.makedirs(G.logdir, exist_ok=True)
 
-    tmp = [int(d) for d in os.listdir(G.logdir) if d.isdigit()]
-    max_dir = max(tmp) if tmp else 0
+    data_dirs = listdir(G.logdir)
 
     # Cleanup
     for f in os.listdir(G.logdir):
@@ -196,7 +195,7 @@ async def main():
         path = os.path.join(G.logdir, str(f))
 
         if f.isdigit():
-            if int(f) < max_dir - 10:
+            if int(f) < data_dirs[0] - 10:
                 shutil.rmtree(path)
         else:
             if os.path.isfile(path):
