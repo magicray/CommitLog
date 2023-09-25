@@ -54,35 +54,38 @@ async def server(reader, writer):
             os._exit(0)
 
 
-def get_logfile(log_seq):
-    l1, l2 = log_seq//100000, log_seq//1000
-    return os.path.join(G.logdir, str(l1), str(l2), str(log_seq))
+def path_join(*path):
+    return os.path.join(*[str(p) for p in path])
 
 
-def max_file():
-    # Traverse the three level directory hierarchy picking the highest
-    # numbered dir/file at each level
-    l1_dirs = [int(f) for f in os.listdir(G.logdir) if f.isdigit()]
-    for l1 in sorted(l1_dirs, reverse=True):
-        l2_dirname = os.path.join(G.logdir, str(l1))
-        l2_dirs = [int(f) for f in os.listdir(l2_dirname) if f.isdigit()]
-        for l2 in sorted(l2_dirs, reverse=True):
-            l3_dirname = os.path.join(l2_dirname, str(l2))
-            files = [int(f) for f in os.listdir(l3_dirname) if f.isdigit()]
-            for f in sorted(files, reverse=True):
-                return f, os.path.join(l3_dirname, str(f))
+def seq2path(log_seq):
+    return path_join(G.logdir, log_seq//100000, log_seq//1000, log_seq)
 
-    return 0, None
+
+def listdir(dirname):
+    files = [int(f) for f in os.listdir(dirname) if f.isdigit()]
+    return sorted(files, reverse=True)
+
+
+def latest_logseq():
+    # Traverse the three level directory hierarchy,
+    # picking the highest numbered dir/file at each level
+    for x in listdir(G.logdir):
+        for y in listdir(path_join(G.logdir, x)):
+            for f in listdir(path_join(G.logdir, x, y)):
+                return f
+
+    return 0
 
 
 def logseq_server(header, body):
-    return 'OK', max_file()[0], None
+    return 'OK', latest_logseq(), None
 
 
 def read_server(header, body):
     what, log_seq = header
 
-    path = get_logfile(log_seq)
+    path = seq2path(log_seq)
     if not os.path.isfile(path):
         return 'NOTFOUND', None, None
 
@@ -122,14 +125,14 @@ def paxos_server(header, body):
     if 'promise' == phase and proposal_seq > promised_seq:
         dump(promise_filepath, dict(promised_seq=proposal_seq))
 
-        # Find the most recent record in this log stream
-        log_seq, filepath = max_file()
+        # Most recent log file
+        log_seq = latest_logseq()
 
         # Log stream does not yet exist
         if 0 == log_seq:
             return 'OK', dict(log_seq=0, accepted_seq=0), None
 
-        with open(filepath, 'rb') as fd:
+        with open(seq2path(log_seq), 'rb') as fd:
             return 'OK', json.loads(fd.readline()), fd.read()
 
     # ACCEPT - Client has sent the most recent value from the promise phase.
@@ -139,7 +142,7 @@ def paxos_server(header, body):
 
         # Continuous cleanup - remove an older file before writing a new one
         # Retain only the most recent 1 million log records
-        old_log_record = get_logfile(log_seq - 1000*1000)
+        old_log_record = seq2path(log_seq - 1000*1000)
         if os.path.isfile(old_log_record):
             os.remove(old_log_record)
             log(f'removed old record log_seq({old_log_record})')
@@ -151,7 +154,7 @@ def paxos_server(header, body):
                       log_seq=log_seq, commit_id=commit_id,
                       length=len(body), md5=hashlib.md5(body).hexdigest())
 
-        dump(get_logfile(header['log_seq']), header, b'\n', body)
+        dump(seq2path(header['log_seq']), header, b'\n', body)
 
         return 'OK', header, None
 
