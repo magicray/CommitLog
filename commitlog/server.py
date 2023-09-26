@@ -15,10 +15,9 @@ from logging import critical as log
 
 
 async def server(reader, writer):
-    SYNC_HANDLERS = dict(promise=paxos_server, accept=paxos_server,
-                         logseq=logseq_server, read=read_server)
-
-    ASYNC_HANDLERS = dict(elect=paxos_client)
+    HANDLERS = dict(promise=paxos_server, accept=paxos_server,
+                    logseq=logseq_server, read=read_server,
+                    elect=paxos_client)
 
     peer = writer.get_extra_info('socket').getpeername()
 
@@ -37,19 +36,12 @@ async def server(reader, writer):
                 log(f'{peer} disconnected or invalid header')
                 return writer.close()
 
-            if length > 1024*1024:
-                log(f'{peer} request body too long {req}')
+            if method not in HANDLERS or length > 1024*1024:
+                log(f'{peer} invalid request {req}')
                 return writer.close()
 
-            if method in SYNC_HANDLERS:
-                status, header, body = SYNC_HANDLERS[method](
-                    header, await reader.readexactly(length))
-            elif method in ASYNC_HANDLERS:
-                status, header, body = await ASYNC_HANDLERS[method](
-                    header, await reader.readexactly(length))
-            else:
-                log(f'{peer} invalid method {req}')
-                return writer.close()
+            status, header, body = await HANDLERS[method](
+                header, await reader.readexactly(length))
 
             length = len(body) if body else 0
             res = json.dumps([status, header, length])
@@ -91,11 +83,11 @@ def latest_logseq():
     return 0
 
 
-def logseq_server(header, body):
+async def logseq_server(header, body):
     return 'OK', latest_logseq(), None
 
 
-def read_server(header, body):
+async def read_server(header, body):
     what, log_seq = header
 
     path = seq2path(log_seq)
@@ -123,7 +115,7 @@ def dump(path, *objects):
     os.sync()
 
 
-def paxos_server(header, body):
+async def paxos_server(header, body):
     phase = 'promise' if 1 == len(header) else 'accept'
     proposal_seq = header[0]
 
