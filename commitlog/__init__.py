@@ -113,7 +113,8 @@ class Client():
         while True:
             if seq > max_seq:
                 res = await self.rpc('logseq')
-                max_seq = max([v[0] for v in res.values()])
+                if res:
+                    max_seq = max([v[0] for v in res.values()])
 
             if seq > max_seq:
                 await asyncio.sleep(wait_sec)
