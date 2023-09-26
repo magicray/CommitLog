@@ -22,7 +22,8 @@ async def server(reader, writer):
         try:
             try:
                 req = await reader.readline()
-                if not req:
+                if not req or len(req) > 1024:
+                    log(f'{peer} header too long {len(req)} > 1KB')
                     return writer.close()
 
                 req = req.decode().strip()
@@ -31,8 +32,8 @@ async def server(reader, writer):
                 log(f'{peer} disconnected or invalid header')
                 return writer.close()
 
-            if method not in HANDLERS:
-                log(f'{peer} invalid command {req}')
+            if method not in HANDLERS or length > 1024*1024:
+                log(f'{peer} invalid request {req}')
                 return writer.close()
 
             status, header, body = HANDLERS[method](
