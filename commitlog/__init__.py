@@ -128,42 +128,48 @@ class Client():
         raise Exception(f'NO_QUORUM log_seq({log_seq})')
 
     async def tail(self, seq, wait_sec=1):
-        max_seq = seq
+        max_seq = seq - 1
 
         while True:
-            res = await self.rpc('logseq')
-            max_seq = max([v[0] for v in res.values()])
+            if seq > max_seq:
+                res = await self.rpc('logseq')
+                max_seq = max([v[0] for v in res.values()])
 
-            while seq <= max_seq:
-                res = await self.rpc('read', ['header', seq])
-                if self.quorum > len(res):
-                    await asyncio.sleep(wait_sec)
-                    continue
+            if seq > max_seq:
+                await asyncio.sleep(wait_sec)
+                continue
 
-                hdrs = list()
-                for k, v in res.items():
-                    hdrs.append((
-                        v[0].pop('accepted_seq'),          # accepted seq
-                        json.dumps(v[0], sort_keys=True),  # record metadata
-                        k))                                # server
+            res = await self.rpc('read', ['header', seq])
+            if self.quorum > len(res):
+                await asyncio.sleep(wait_sec)
+                continue
 
-                hdrs = sorted(hdrs, reverse=True)
-                latest = hdrs[0][1]
-                for i in range(self.quorum):
-                    if latest != hdrs[i][1]:
-                        log('NOT_YET_FINALIZED', json.dumps(hdrs, indent=4))
-                        await asyncio.sleep(wait_sec)
-                        continue
+            hdrs = list()
+            for k, v in res.items():
+                hdrs.append((
+                    v[0].pop('accepted_seq'),          # accepted seq
+                    json.dumps(v[0], sort_keys=True),  # record metadata
+                    k))                                # server
 
-                result = await self.rpc.rpc(hdrs[0][2], 'read', ['body', seq])
-                if not result or 'OK' != result[0]:
-                    await asyncio.sleep(wait_sec)
-                    continue
+            hdrs = sorted(hdrs, reverse=True)
+            latest = hdrs[0][1]
+            all_ok = True
+            for i in range(self.quorum):
+                if latest != hdrs[i][1]:
+                    all_ok = False
+                    log('NOT_YET_FINALIZED', json.dumps(hdrs, indent=4))
 
-                result[1].pop('accepted_seq')
-                assert (hdrs[0][1] == json.dumps(result[1], sort_keys=True))
+            if all_ok is not True:
+                await asyncio.sleep(wait_sec)
+                continue
 
-                yield result[1], result[2]
-                seq = seq + 1
+            result = await self.rpc.rpc(hdrs[0][2], 'read', ['body', seq])
+            if not result or 'OK' != result[0]:
+                await asyncio.sleep(wait_sec)
+                continue
 
-            await asyncio.sleep(wait_sec)
+            result[1].pop('accepted_seq')
+            assert (hdrs[0][1] == json.dumps(result[1], sort_keys=True))
+
+            yield result[1], result[2]
+            seq = seq + 1
