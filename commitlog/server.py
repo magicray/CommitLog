@@ -4,17 +4,21 @@ import sys
 import ssl
 import json
 import uuid
+import time
 import shutil
 import hashlib
 import asyncio
 import logging
 import traceback
+import commitlog
 from logging import critical as log
 
 
 async def server(reader, writer):
-    HANDLERS = dict(promise=paxos_server, accept=paxos_server,
-                    logseq=logseq_server, read=read_server)
+    SYNC_HANDLERS = dict(promise=paxos_server, accept=paxos_server,
+                         logseq=logseq_server, read=read_server)
+
+    ASYNC_HANDLERS = dict(elect=paxos_client)
 
     peer = writer.get_extra_info('socket').getpeername()
 
@@ -33,12 +37,19 @@ async def server(reader, writer):
                 log(f'{peer} disconnected or invalid header')
                 return writer.close()
 
-            if method not in HANDLERS or length > 1024*1024:
-                log(f'{peer} invalid request {req}')
+            if length > 1024*1024:
+                log(f'{peer} request body too long {req}')
                 return writer.close()
 
-            status, header, body = HANDLERS[method](
-                header, await reader.readexactly(length))
+            if method in SYNC_HANDLERS:
+                status, header, body = SYNC_HANDLERS[method](
+                    header, await reader.readexactly(length))
+            elif method in ASYNC_HANDLERS:
+                status, header, body = await ASYNC_HANDLERS[method](
+                    header, await reader.readexactly(length))
+            else:
+                log(f'{peer} invalid method {req}')
+                return writer.close()
 
             length = len(body) if body else 0
             res = json.dumps([status, header, length])
@@ -161,6 +172,56 @@ def paxos_server(header, body):
         return 'OK', header, None
 
     return 'STALE_PROPOSAL_SEQ', None, None
+
+
+# Used for leader election - Ideally, this should be part of the client code.
+# However, since leader election is done infrequently, its more maintainable to
+# keep this code here and call it over RPC. This makes client very lightweight.
+async def paxos_client(header, body):
+    cert, servers = sys.argv[1], header
+
+    rpc = commitlog.RPC(cert, servers)
+    quorum = int(len(servers)/2) + 1
+    proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
+
+    # paxos PROMISE phase - block stale leaders from writing
+    res = await rpc('promise', [proposal_seq])
+    if quorum > len(res):
+        return 'NO_PROMISE_QUORUM', None, None
+
+    headers = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
+    if 1 == len(headers):
+        log_seq = json.loads(headers.pop())['log_seq']
+        return 'OK', [proposal_seq, log_seq + 1], None
+
+    # This is the CRUX of the paxos protocol
+    # Find the most recent log_seq with most recent accepted_seq
+    # Only this value should be proposed, else everything breaks
+    log_seq = accepted_seq = 0
+    for header, body in res.values():
+        old = log_seq, accepted_seq
+        new = header['log_seq'], header['accepted_seq']
+
+        if new > old:
+            blob = body
+            log_seq = header['log_seq']
+            commit_id = header['commit_id']
+            accepted_seq = header['accepted_seq']
+
+    if 0 == log_seq:
+        return 'BLOB_NOT_FOUND', None, None
+
+    # paxos ACCEPT phase - write a blob to bring all nodes in sync
+    res = await rpc('accept', [proposal_seq, log_seq, commit_id], blob)
+    if quorum > len(res):
+        return 'NO_ACCEPT_QUORUM', None, None
+
+    headers = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
+    if 1 == len(headers):
+        log_seq = json.loads(headers.pop())['log_seq']
+        return 'OK', [proposal_seq, log_seq + 1], None
+
+    return 'ACCEPT_FAILED', None, None
 
 
 class G:

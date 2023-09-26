@@ -1,6 +1,5 @@
 import ssl
 import json
-import time
 import uuid
 import asyncio
 from logging import critical as log
@@ -15,7 +14,7 @@ class RPC():
         self.SSL.verify_mode = ssl.CERT_REQUIRED
         self.SSL.check_hostname = False
 
-        self.conns = {srv: (None, None) for srv in servers}
+        self.conns = {tuple(srv): (None, None) for srv in servers}
 
     async def rpc(self, server, method, header=None, body=b''):
         try:
@@ -61,54 +60,33 @@ class Client():
     def __init__(self, cert, servers):
         self.rpc = RPC(cert, servers)
         self.quorum = int(len(servers)/2) + 1
+        self.servers = servers
 
         self.log_seq = None
         self.proposal_seq = None
 
-    async def commit(self, blob=None):
-        commit_id = str(uuid.uuid4())
+    async def lead(self):
+        self.log_seq = self.proposal_seq = None
 
-        # This client is not a leader yet as log_seq is not set
-        if not self.log_seq and not blob:
-            # paxos PROMISE phase - block stale leaders from writing
-            self.proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
+        # Server would run PROMISE phase on this client's behalf
+        res = await self.rpc('elect', self.servers)
+        if 1 != len(res):
+            raise Exception('ELECTION_FAILED')
 
-            res = await self.rpc('promise', [self.proposal_seq])
-            if self.quorum > len(res):
-                raise Exception('NO_QUORUM')
+        self.proposal_seq, self.log_seq = list(res.values())[0][0]
 
-            headers = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
-
-            if 1 == len(headers):
-                header = json.loads(headers.pop())
-                self.log_seq = header['log_seq'] + 1
-                return header
-
-            # Default values if nothing is found in the PROMISE replies
-            log_seq, accepted_seq, blob = 0, 0, None
-
-            # This is the CRUX of the paxos protocol
-            # Find the most recent log_seq with most recent accepted_seq
-            # Only this value should be proposed, else everything breaks
-            for header, body in res.values():
-                old = log_seq, accepted_seq
-                new = header['log_seq'], header['accepted_seq']
-
-                if new > old:
-                    blob = body
-                    log_seq = header['log_seq']
-                    commit_id = header['commit_id']
-                    accepted_seq = header['accepted_seq']
-
+    async def commit(self, blob):
         if not blob:
-            raise Exception(f'EMPTY_BLOB log_seq({log_seq})')
+            raise Exception('EMPTY_REQUEST')
 
-        if self.log_seq:
-            # Remove leadership. Reinstate if the next write is successful
-            log_seq, self.log_seq = self.log_seq, None
+        if not self.log_seq or not self.proposal_seq:
+            raise Exception('NOT_THE_LEADER')
 
-        # paxos ACCEPT phase - write a new blob
-        # Ignore tmep failure and retry a few times
+        # Remove leadership. Reinstate if the commit is successful
+        log_seq, self.log_seq = self.log_seq, None
+
+        # paxos ACCEPT phase - write a new blob. Retry on temp failure.
+        commit_id = str(uuid.uuid4())
         for delay in (1, 1, 1, 1, 0):
             header = [self.proposal_seq, log_seq, commit_id]
             res = await self.rpc('accept', header, blob)
@@ -124,6 +102,8 @@ class Client():
                 header = json.loads(headers.pop())
                 self.log_seq = header['log_seq'] + 1
                 return header
+
+            await asyncio.sleep(delay)
 
         raise Exception(f'NO_QUORUM log_seq({log_seq})')
 

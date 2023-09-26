@@ -18,8 +18,7 @@ async def main():
     client = commitlog.Client(cert, servers)
 
     try:
-        result = await client.commit()
-        log(json.dumps(result, indent=4, sort_keys=True))
+        await client.lead()
 
         while True:
             blob = sys.stdin.buffer.read(1024*1024)
