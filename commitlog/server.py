@@ -23,7 +23,7 @@ async def server(reader, writer):
             try:
                 req = await reader.readline()
                 if not req or len(req) > 1024:
-                    log(f'{peer} header too long {len(req)} > 1KB')
+                    log(f'{peer} invalid header length({len(req)})')
                     return writer.close()
 
                 req = req.decode().strip()
