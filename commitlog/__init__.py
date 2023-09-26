@@ -44,7 +44,7 @@ class RPC():
             if self.conns[server][1] is not None:
                 self.conns[server][1].close()
 
-            self.conns[server] = None, None, None
+            self.conns[server] = None, None
 
     async def __call__(self, method, header=None, body=b''):
         servers = self.conns.keys()
@@ -61,15 +61,19 @@ class Client():
     def __init__(self, cert, servers):
         self.rpc = RPC(cert, servers)
         self.quorum = int(len(servers)/2) + 1
-        self.leader = None
+
+        self.log_seq = None
+        self.proposal_seq = None
 
     async def commit(self, blob=None):
         commit_id = str(uuid.uuid4())
-        proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
-        if self.leader is None and not blob:
+        # This client is not a leader yet as log_seq is not set
+        if not self.log_seq and not blob:
             # paxos PROMISE phase - block stale leaders from writing
-            res = await self.rpc('promise', [proposal_seq])
+            self.proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
+
+            res = await self.rpc('promise', [self.proposal_seq])
             if self.quorum > len(res):
                 raise Exception('NO_QUORUM')
 
@@ -77,12 +81,11 @@ class Client():
 
             if 1 == len(headers):
                 header = json.loads(headers.pop())
-                if 0 != header['log_seq']:
-                    self.leader = [proposal_seq, header['log_seq'] + 1]
-                    return header
+                self.log_seq = header['log_seq'] + 1
+                return header
 
             # Default values if nothing is found in the PROMISE replies
-            log_seq, accepted_seq, blob = 0, 0, commit_id.encode()
+            log_seq, accepted_seq, blob = 0, 0, None
 
             # This is the CRUX of the paxos protocol
             # Find the most recent log_seq with most recent accepted_seq
@@ -100,14 +103,14 @@ class Client():
         if not blob:
             raise Exception(f'EMPTY_BLOB log_seq({log_seq})')
 
-        if self.leader:
-            # Take away leadership temporarily.
-            (proposal_seq, log_seq), self.leader = self.leader, None
+        if self.log_seq:
+            # Remove leadership. Reinstate if the next write is successful
+            log_seq, self.log_seq = self.log_seq, None
 
         # paxos ACCEPT phase - write a new blob
         # Ignore tmep failure and retry a few times
         for delay in (1, 1, 1, 1, 0):
-            header = [proposal_seq, log_seq, commit_id]
+            header = [self.proposal_seq, log_seq, commit_id]
             res = await self.rpc('accept', header, blob)
 
             if self.quorum > len(res):
@@ -119,7 +122,7 @@ class Client():
             # Write successful. Reinstate as the leader.
             if 1 == len(headers):
                 header = json.loads(headers.pop())
-                self.leader = [proposal_seq, header['log_seq'] + 1]
+                self.log_seq = header['log_seq'] + 1
                 return header
 
         raise Exception(f'NO_QUORUM log_seq({log_seq})')
@@ -129,10 +132,6 @@ class Client():
 
         while True:
             res = await self.rpc('logseq')
-            if self.quorum > len(res):
-                await asyncio.sleep(wait_sec)
-                continue
-
             max_seq = max([v[0] for v in res.values()])
 
             while seq <= max_seq:
