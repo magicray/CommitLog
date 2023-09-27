@@ -70,10 +70,14 @@ class Client():
 
         # Server would run PROMISE phase on this client's behalf
         res = await self.rpc('elect', self.servers)
-        if 1 != len(res):
+        result = sorted([hdr for hdr, body in res.values()], reverse=True)
+
+        if not result:
             raise Exception('ELECTION_FAILED')
 
-        self.proposal_seq, self.log_seq = list(res.values())[0][0]
+        self.proposal_seq, self.log_seq = result[0]
+
+        return self.log_seq
 
     async def commit(self, blob):
         if not blob:
@@ -82,28 +86,20 @@ class Client():
         if not self.log_seq or not self.proposal_seq:
             raise Exception('NOT_THE_LEADER')
 
-        # Remove leadership. Reinstate if the commit is successful
-        log_seq, self.log_seq = self.log_seq, None
+        # Remove as the leader
+        log_seq = self.log_seq
+        self.log_seq = None
 
-        # paxos ACCEPT phase - write a new blob. Retry on temp failure.
-        commit_id = str(uuid.uuid4())
-        for delay in (1, 1, 1, 1, 0):
-            header = [self.proposal_seq, log_seq, commit_id]
-            res = await self.rpc('accept', header, blob)
+        # paxos ACCEPT phase - write a new blob
+        hdr = [self.proposal_seq, log_seq, str(uuid.uuid4())]
+        res = await self.rpc('accept', hdr, blob)
 
-            if self.quorum > len(res):
-                await asyncio.sleep(delay)
-                continue
+        headers = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
 
-            headers = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
-
-            # Write successful. Reinstate as the leader.
-            if 1 == len(headers):
-                header = json.loads(headers.pop())
-                self.log_seq = header['log_seq'] + 1
-                return header
-
-            await asyncio.sleep(delay)
+        # Reinstate as the leader if the write is successful.
+        if len(res) >= self.quorum and 1 == len(headers):
+            self.log_seq = log_seq + 1
+            return json.loads(headers.pop())
 
         raise Exception(f'NO_QUORUM log_seq({log_seq})')
 

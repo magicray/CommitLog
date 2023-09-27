@@ -14,6 +14,15 @@ import commitlog
 from logging import critical as log
 
 
+# Server accepts only async_generators.
+# Decorate regular async coroutines with this to convert them to a generator.
+def async_generator(f):
+    async def wrapper(*argv, **kwarg):
+        yield await f(*argv, **kwarg)
+
+    return wrapper
+
+
 async def server(reader, writer):
     HANDLERS = dict(promise=paxos_server, accept=paxos_server,
                     logseq=logseq_server, read=read_server,
@@ -40,19 +49,19 @@ async def server(reader, writer):
                 log(f'{peer} invalid request {req}')
                 return writer.close()
 
-            status, header, body = await HANDLERS[method](
-                header, await reader.readexactly(length))
+            itr = HANDLERS[method](header, await reader.readexactly(length))
 
-            length = len(body) if body else 0
-            res = json.dumps([status, header, length])
+            async for status, header, body in itr:
+                length = len(body) if body else 0
+                res = json.dumps([status, header, length])
 
-            writer.write(res.encode())
-            writer.write(b'\n')
-            if length > 0:
-                writer.write(body)
+                writer.write(res.encode())
+                writer.write(b'\n')
+                if length > 0:
+                    writer.write(body)
 
-            await writer.drain()
-            log(f'{peer} {method}:{status} {req} {res}')
+                await writer.drain()
+                log(f'{peer} {method}:{status} {req} {res}')
         except Exception as e:
             traceback.print_exc()
             log(f'{peer} FATAL({e})')
@@ -83,10 +92,12 @@ def latest_logseq():
     return 0
 
 
+@async_generator
 async def logseq_server(header, body):
     return 'OK', latest_logseq(), None
 
 
+@async_generator
 async def read_server(header, body):
     what, log_seq = header
 
@@ -115,6 +126,7 @@ def dump(path, *objects):
     os.sync()
 
 
+@async_generator
 async def paxos_server(header, body):
     phase = 'promise' if 1 == len(header) else 'accept'
     proposal_seq = header[0]
@@ -169,6 +181,7 @@ async def paxos_server(header, body):
 # Used for leader election - Ideally, this should be part of the client code.
 # However, since leader election is done infrequently, its more maintainable to
 # keep this code here and call it over RPC. This makes client very lightweight.
+@async_generator
 async def paxos_client(header, body):
     cert, servers = sys.argv[1], header
 
