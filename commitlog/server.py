@@ -26,7 +26,7 @@ def async_generator(f):
 async def server(reader, writer):
     HANDLERS = dict(promise=paxos_server, accept=paxos_server,
                     logseq=logseq_server, read=read_server,
-                    elect=paxos_client)
+                    elect=paxos_client, tail=tail_server)
 
     peer = writer.get_extra_info('socket').getpeername()
 
@@ -227,6 +227,52 @@ async def paxos_client(header, body):
         return 'OK', [proposal_seq, log_seq + 1], None
 
     return 'ACCEPT_FAILED', None, None
+
+
+async def tail_server(header, data):
+    cert = sys.argv[1]
+    seq, servers = header
+
+    rpc = commitlog.RPC(cert, servers)
+    quorum = int(len(servers)/2) + 1
+
+    while True:
+        res = await rpc('read', ['header', seq])
+        if quorum > len(res):
+            yield 'WAIT', None, None
+            await asyncio.sleep(1)
+            continue
+
+        hdrs = list()
+        for k, v in res.items():
+            hdrs.append((
+                v[0].pop('accepted_seq'),          # accepted seq
+                json.dumps(v[0], sort_keys=True),  # record metadata
+                k))                                # server
+
+        hdrs = sorted(hdrs, reverse=True)
+        latest = hdrs[0][1]
+        all_ok = True
+        for i in range(quorum):
+            if latest != hdrs[i][1]:
+                all_ok = False
+
+        if all_ok is not True:
+            yield 'WAIT', None, None
+            await asyncio.sleep(1)
+            continue
+
+        result = await rpc.rpc(hdrs[0][2], 'read', ['body', seq])
+        if not result or 'OK' != result[0]:
+            yield 'WAIT', None, None
+            await asyncio.sleep(1)
+            continue
+
+        result[1].pop('accepted_seq')
+        assert (hdrs[0][1] == json.dumps(result[1], sort_keys=True))
+
+        yield 'OK', result[1], result[2]
+        seq = seq + 1
 
 
 class G:
