@@ -89,7 +89,7 @@ class Client():
         self.log_seq = self.proposal_seq = None
 
         # Server would run PROMISE phase on this client's behalf
-        res = await self.rpc('elect', self.servers)
+        res = await self.rpc('grant', self.servers)
         result = sorted([hdr for hdr, body in res.values()], reverse=True)
 
         if not result:
@@ -115,7 +115,7 @@ class Client():
         res = await self.rpc('accept', hdr, blob)
         hdrs = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
 
-        # Reinstate as the leader as the write is successful.
+        # Reinstate the leader as the write is successful.
         if len(res) >= self.quorum and 1 == len(hdrs):
             self.log_seq += 1
             return json.loads(hdrs.pop())

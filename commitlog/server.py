@@ -27,7 +27,7 @@ async def server(reader, writer):
     HANDLERS = dict(promise=paxos_server, accept=paxos_server,
                     logseq=logseq_server,
                     header=header_server, body=body_server,
-                    elect=paxos_client, tail=tail_server)
+                    grant=paxos_client, tail=tail_server)
 
     peer = writer.get_extra_info('socket').getpeername()
 
