@@ -25,7 +25,8 @@ def async_generator(f):
 
 async def server(reader, writer):
     HANDLERS = dict(promise=paxos_server, accept=paxos_server,
-                    logseq=logseq_server, read=read_server,
+                    logseq=logseq_server,
+                    header=header_server, body=body_server,
                     elect=paxos_client, tail=tail_server)
 
     peer = writer.get_extra_info('socket').getpeername()
@@ -98,17 +99,23 @@ async def logseq_server(header, body):
 
 
 @async_generator
-async def read_server(header, body):
-    what, log_seq = header
-
-    path = seq2path(log_seq)
+async def header_server(header, body):
+    path = seq2path(header)
     if not os.path.isfile(path):
         return 'NOTFOUND', None, None
 
     with open(path, 'rb') as fd:
-        header = json.loads(fd.readline())
+        return 'OK', json.loads(fd.readline()), None
 
-        return 'OK', header, fd.read() if 'body' == what else None
+
+@async_generator
+async def body_server(header, body):
+    path = seq2path(header)
+    if not os.path.isfile(path):
+        return 'NOTFOUND', None, None
+
+    with open(path, 'rb') as fd:
+        return 'OK', json.loads(fd.readline()), fd.read()
 
 
 def dump(path, *objects):
@@ -228,14 +235,13 @@ async def paxos_client(header, body):
 
 
 async def tail_server(header, data):
-    cert = sys.argv[1]
-    seq, servers = header
+    cert, (seq, servers) = sys.argv[1], header
 
     rpc = commitlog.RPC(cert, servers)
     quorum = int(len(servers)/2) + 1
 
     while True:
-        res = await rpc('read', ['header', seq])
+        res = await rpc('header', seq)
         if quorum > len(res):
             yield 'WAIT', None, None
             await asyncio.sleep(1)
@@ -260,7 +266,7 @@ async def tail_server(header, data):
             await asyncio.sleep(1)
             continue
 
-        result = await rpc.rpc(hdrs[0][2], 'read', ['body', seq])
+        result = await rpc.rpc(hdrs[0][2], 'body', seq)
         if not result or 'OK' != result[0]:
             yield 'WAIT', None, None
             await asyncio.sleep(1)
