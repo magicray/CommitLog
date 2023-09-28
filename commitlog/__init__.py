@@ -17,19 +17,13 @@ class Client():
         res = await self.rpc('grant', self.servers)
         result = sorted([hdr for hdr, body in res.values()], reverse=True)
 
-        if not result:
-            raise Exception('ELECTION_FAILED')
-
-        self.proposal_seq, self.log_seq = result[0]
-
-        return self.log_seq
+        if result:
+            self.log_seq = result[0][1]
+            self.proposal_seq = result[0][0]
+            return self.log_seq
 
     async def commit(self, blob):
-        if not blob:
-            raise Exception('EMPTY_REQUEST')
-
-        if not self.proposal_seq:
-            raise Exception('NOT_THE_LEADER')
+        assert (blob and self.log_seq and self.proposal_seq)
 
         # Remove as the leader
         proposal_seq = self.proposal_seq
@@ -44,8 +38,6 @@ class Client():
         if len(res) >= self.quorum and 1 == len(hdrs):
             self.log_seq += 1
             return json.loads(hdrs.pop())
-
-        raise Exception(f'NO_QUORUM log_seq({self.log_seq})')
 
     async def tail(self, seq):
         while True:
