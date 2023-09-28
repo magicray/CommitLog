@@ -17,8 +17,8 @@ from logging import critical as log
 # Server accepts only async_generators.
 # Decorate regular async coroutines with this to convert them to a generator.
 def async_generator(f):
-    async def wrapper(*argv, **kwarg):
-        yield await f(*argv, **kwarg)
+    async def wrapper(*args, **kwarg):
+        yield await f(*args, **kwarg)
 
     return wrapper
 
@@ -194,10 +194,9 @@ async def paxos_client(header, body):
     if quorum > len(res):
         return 'NO_PROMISE_QUORUM', None, None
 
-    headers = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
-    if 1 == len(headers):
-        log_seq = json.loads(headers.pop())['log_seq']
-        return 'OK', [proposal_seq, log_seq + 1], None
+    hdrs = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
+    if 1 == len(hdrs):
+        return 'OK', [proposal_seq, json.loads(hdrs.pop())['log_seq']], None
 
     # This is the CRUX of the paxos protocol
     # Find the most recent log_seq with most recent accepted_seq
@@ -221,10 +220,9 @@ async def paxos_client(header, body):
     if quorum > len(res):
         return 'NO_ACCEPT_QUORUM', None, None
 
-    headers = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
-    if 1 == len(headers):
-        log_seq = json.loads(headers.pop())['log_seq']
-        return 'OK', [proposal_seq, log_seq + 1], None
+    hdrs = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
+    if 1 == len(hdrs):
+        return 'OK', [proposal_seq, json.loads(hdrs.pop())['log_seq']], None
 
     return 'ACCEPT_FAILED', None, None
 

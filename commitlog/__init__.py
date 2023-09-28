@@ -70,6 +70,11 @@ class RPC():
         return {s: (r[1], r[2]) for s, r in zip(servers, res)
                 if type(r) is tuple and 'OK' == r[0]}
 
+    def __del__(self):
+        for server, (reader, writer) in self.conns.items():
+            if writer is not None:
+                writer.close()
+
 
 class Client():
     def __init__(self, cert, servers):
@@ -98,25 +103,24 @@ class Client():
         if not blob:
             raise Exception('EMPTY_REQUEST')
 
-        if not self.log_seq or not self.proposal_seq:
+        if not self.proposal_seq:
             raise Exception('NOT_THE_LEADER')
 
         # Remove as the leader
-        log_seq = self.log_seq
-        self.log_seq = None
+        proposal_seq = self.proposal_seq
+        self.proposal_seq = None
 
         # paxos ACCEPT phase - write a new blob
-        hdr = [self.proposal_seq, log_seq, str(uuid.uuid4())]
+        hdr = [proposal_seq, self.log_seq + 1, str(uuid.uuid4())]
         res = await self.rpc('accept', hdr, blob)
+        hdrs = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
 
-        headers = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
+        # Reinstate as the leader as the write is successful.
+        if len(res) >= self.quorum and 1 == len(hdrs):
+            self.log_seq += 1
+            return json.loads(hdrs.pop())
 
-        # Reinstate as the leader if the write is successful.
-        if len(res) >= self.quorum and 1 == len(headers):
-            self.log_seq = log_seq + 1
-            return json.loads(headers.pop())
-
-        raise Exception(f'NO_QUORUM log_seq({log_seq})')
+        raise Exception(f'NO_QUORUM log_seq({self.log_seq})')
 
     async def tail(self, seq):
         while True:
