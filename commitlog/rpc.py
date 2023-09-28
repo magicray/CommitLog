@@ -63,12 +63,16 @@ class Server():
                     length = len(body) if body else 0
                     res = json.dumps([status, header, length])
 
-                    writer.write(res.encode())
-                    writer.write(b'\n')
-                    if length > 0:
-                        writer.write(body)
+                    try:
+                        writer.write(res.encode())
+                        writer.write(b'\n')
+                        if length > 0:
+                            writer.write(body)
+                        await writer.drain()
+                    except Exception:
+                        log(f'{peer} disconnected or invalid header')
+                        return writer.close()
 
-                    await writer.drain()
                     log(f'{peer} {method}:{status} {req} {res}')
             except Exception as e:
                 traceback.print_exc()
