@@ -31,10 +31,10 @@ class Certificate:
 
 
 class Server():
-    def __init__(self, methods):
-        self.methods = methods
+    def __init__(self, **kwargs):
+        self.methods = kwargs
 
-    async def server(self, reader, writer):
+    async def handler(self, reader, writer):
         peer = writer.get_extra_info('socket').getpeername()
 
         while True:
@@ -75,6 +75,11 @@ class Server():
                 log(f'{peer} FATAL({e})')
                 os._exit(0)
 
+    async def __call__(self, port, ssl=None):
+        srv = await asyncio.start_server(self.handler, None, port, ssl=ssl)
+        async with srv:
+            return await srv.serve_forever()
+
 
 class Client():
     def __init__(self, cert, servers):
@@ -96,7 +101,7 @@ class Client():
         except Exception as e:
             log(e)
 
-    async def rpc(self, server, method, header=None, body=b''):
+    async def server(self, server, method, header=None, body=b''):
         try:
             if self.conns[server][0] is None or self.conns[server][1] is None:
                 self.conns[server] = await asyncio.open_connection(
@@ -125,15 +130,18 @@ class Client():
 
             self.conns[server] = None, None
 
-    async def __call__(self, method, header=None, body=b''):
+    async def cluster(self, method, header=None, body=b''):
         servers = self.conns.keys()
 
         res = await asyncio.gather(
-            *[self.rpc(s, method, header, body) for s in servers],
+            *[self.server(s, method, header, body) for s in servers],
             return_exceptions=True)
 
-        return {s: (r[1], r[2]) for s, r in zip(servers, res)
-                if type(r) is tuple and 'OK' == r[0]}
+        return {s: r for s, r in zip(servers, res) if type(r) is tuple}
+
+    async def __call__(self, method, header=None, body=b''):
+        result = await self.cluster(method, header, body)
+        return {k: (v[1], v[2]) for k, v in result.items() if 'OK' == v[0]}
 
     def __del__(self):
         for server, (reader, writer) in self.conns.items():

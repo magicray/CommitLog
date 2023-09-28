@@ -21,7 +21,7 @@ def seq2path(log_seq):
     return path_join(G.logdir, log_seq//100000, log_seq//1000, log_seq)
 
 
-def listdir(dirname):
+def sorted_dir(dirname):
     files = [int(f) for f in os.listdir(dirname) if f.isdigit()]
     return sorted(files, reverse=True)
 
@@ -29,9 +29,9 @@ def listdir(dirname):
 def latest_logseq():
     # Traverse the three level directory hierarchy,
     # picking the highest numbered dir/file at each level
-    for x in listdir(G.logdir):
-        for y in listdir(path_join(G.logdir, x)):
-            for f in listdir(path_join(G.logdir, x, y)):
+    for x in sorted_dir(G.logdir):
+        for y in sorted_dir(path_join(G.logdir, x)):
+            for f in sorted_dir(path_join(G.logdir, x, y)):
                 return f
 
     return 0
@@ -210,7 +210,7 @@ async def tail_server(header, data):
             await asyncio.sleep(1)
             continue
 
-        result = await rpc.rpc(hdrs[0][2], 'body', seq)
+        result = await rpc.server(hdrs[0][2], 'body', seq)
         if not result or 'OK' != result[0]:
             yield 'WAIT', None, None
             await asyncio.sleep(1)
@@ -233,14 +233,8 @@ async def main():
 
     cert, port = sys.argv[1], int(sys.argv[2])
 
-    Server = commitlog.rpc.Server(dict(
-        promise=paxos_server, accept=paxos_server,
-        logseq=logseq_server,
-        header=header_server, body=body_server,
-        grant=paxos_client, tail=tail_server))
-
-    ssl_ctx = commitlog.rpc.Certificate.context(cert, ssl.Purpose.CLIENT_AUTH)
-    sub = commitlog.rpc.Certificate.subject(ssl_ctx)
+    ctx = commitlog.rpc.Certificate.context(cert, ssl.Purpose.CLIENT_AUTH)
+    sub = commitlog.rpc.Certificate.subject(ctx)
 
     # Extract UUID from the subject. This would be the log_id for this stream
     guid = uuid.UUID(re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}', sub)[0])
@@ -249,7 +243,7 @@ async def main():
     G.logdir = os.path.join('commitlog', G.log_id)
     os.makedirs(G.logdir, exist_ok=True)
 
-    data_dirs = listdir(G.logdir)
+    data_dirs = sorted_dir(G.logdir)
 
     # Cleanup
     for f in os.listdir(G.logdir):
@@ -267,9 +261,13 @@ async def main():
             else:
                 shutil.rmtree(path)
 
-    srv = await asyncio.start_server(Server.server, None, port, ssl=ssl_ctx)
-    async with srv:
-        return await srv.serve_forever()
+    server = commitlog.rpc.Server(
+        promise=paxos_server, accept=paxos_server,
+        logseq=logseq_server,
+        header=header_server, body=body_server,
+        grant=paxos_client, tail=tail_server)
+
+    await server(port, ctx)
 
 
 if '__main__' == __name__:
