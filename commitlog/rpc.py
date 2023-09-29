@@ -135,7 +135,7 @@ class Client():
 
             status, header, length = json.loads(header)
             body = await reader.readexactly(length)
-            assert (length == len(body)), f'INVALID_LEN {length} {len(body)}'
+            assert (length == len(body)), f'LENGTH {length} != {len(body)}'
 
             return status, header, body
         except Exception as e:
@@ -160,8 +160,7 @@ class Client():
 
     def __del__(self):
         for server, (reader, writer) in self.conns.items():
-            if writer is not None:
-                try:
-                    writer.close()
-                except Exception as e:
-                    log(e)
+            try:
+                writer.close()
+            except Exception:
+                pass
