@@ -30,11 +30,11 @@ class Certificate:
         return ctx.get_ca_certs()[0]['subject'][0][0][1]
 
 
-class Server():
-    def __init__(self, **kwargs):
-        self.methods = kwargs
+class Handler():
+    def __init__(self, methods):
+        self.methods = methods
 
-    async def handler(self, reader, writer):
+    async def __call__(self, reader, writer):
         peer = writer.get_extra_info('socket').getpeername()
 
         while True:
@@ -79,10 +79,13 @@ class Server():
                 log(f'{peer} FATAL({e})')
                 os._exit(0)
 
-    async def __call__(self, port, ssl=None):
-        srv = await asyncio.start_server(self.handler, None, port, ssl=ssl)
-        async with srv:
-            return await srv.serve_forever()
+
+async def server(port, cert, methods):
+    ctx = Certificate.context(cert, ssl.Purpose.CLIENT_AUTH)
+    srv = await asyncio.start_server(Handler(methods), None, port, ssl=ctx)
+
+    async with srv:
+        return await srv.serve_forever()
 
 
 class Client():

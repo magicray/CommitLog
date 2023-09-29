@@ -77,10 +77,11 @@ def dump(path, *objects):
     os.sync()
 
 
+# PROMISE - Block stale leaders and return the most recent accepted value.
+# Client will propose the most recent across servers in the accept phase
 @commitlog.rpc.async_generator
-async def paxos_server(header, body):
-    phase = 'promise' if 1 == len(header) else 'accept'
-    proposal_seq = header[0]
+async def paxos_promise(header, body):
+    proposal_seq = header
 
     promised_seq = 0
     promise_filepath = os.path.join(G.logdir, 'promised')
@@ -88,45 +89,55 @@ async def paxos_server(header, body):
         with open(promise_filepath) as fd:
             promised_seq = json.load(fd)['promised_seq']
 
-    # PROMISE - Block stale leaders and return the most recent accepted value.
-    # Client will propose the most recent across servers in the accept phase
-    if 'promise' == phase and proposal_seq > promised_seq:
+    # proposal_seq has to be strictly bigger than whatever seen so far
+    if proposal_seq <= promised_seq:
+        return 'STALE_PROPOSAL_SEQ', None, None
+
+    dump(promise_filepath, dict(promised_seq=proposal_seq))
+
+    log_seq = latest_logseq()
+    if 0 == log_seq:
+        return 'OK', dict(log_seq=0, accepted_seq=0), None
+
+    with open(seq2path(log_seq), 'rb') as fd:
+        return 'OK', json.loads(fd.readline()), fd.read()
+
+
+# ACCEPT - Client has sent the most recent value from the promise phase.
+# Stale leaders blocked. Only the most recent can reach this stage.
+@commitlog.rpc.async_generator
+async def paxos_accept(header, body):
+    proposal_seq, log_seq, commit_id = header
+
+    promised_seq = 0
+    promise_filepath = os.path.join(G.logdir, 'promised')
+    if os.path.isfile(promise_filepath):
+        with open(promise_filepath) as fd:
+            promised_seq = json.load(fd)['promised_seq']
+
+    # proposal_seq has to be bigger than or equal to the biggest seen so far
+    if proposal_seq < promised_seq:
+        return 'STALE_PROPOSAL_SEQ', None, None
+
+    # Continuous cleanup - remove an older file before writing a new one
+    # Retain only the most recent 1 million log records
+    old_log_record = seq2path(log_seq - 1000*1000)
+    if os.path.isfile(old_log_record):
+        os.remove(old_log_record)
+        log(f'removed old record log_seq({old_log_record})')
+
+    # Record new proposal_seq as it is bigger.
+    # Any future writes with a smaller seq would be rejected.
+    if proposal_seq > promised_seq:
         dump(promise_filepath, dict(promised_seq=proposal_seq))
 
-        # Most recent log file
-        log_seq = latest_logseq()
+    header = dict(accepted_seq=proposal_seq, log_id=G.log_id,
+                  log_seq=log_seq, commit_id=commit_id,
+                  length=len(body), sha1=hashlib.sha1(body).hexdigest())
 
-        # Log stream does not yet exist
-        if 0 == log_seq:
-            return 'OK', dict(log_seq=0, accepted_seq=0), None
+    dump(seq2path(log_seq), header, b'\n', body)
 
-        with open(seq2path(log_seq), 'rb') as fd:
-            return 'OK', json.loads(fd.readline()), fd.read()
-
-    # ACCEPT - Client has sent the most recent value from the promise phase.
-    # Stale leaders blocked. Only the most recent can reach this stage.
-    if 'accept' == phase and proposal_seq >= promised_seq:
-        log_seq, commit_id = header[1], header[2]
-
-        # Continuous cleanup - remove an older file before writing a new one
-        # Retain only the most recent 1 million log records
-        old_log_record = seq2path(log_seq - 1000*1000)
-        if os.path.isfile(old_log_record):
-            os.remove(old_log_record)
-            log(f'removed old record log_seq({old_log_record})')
-
-        if proposal_seq > promised_seq:
-            dump(promise_filepath, dict(promised_seq=proposal_seq))
-
-        header = dict(accepted_seq=proposal_seq, log_id=G.log_id,
-                      log_seq=log_seq, commit_id=commit_id,
-                      length=len(body), sha1=hashlib.sha1(body).hexdigest())
-
-        dump(seq2path(header['log_seq']), header, b'\n', body)
-
-        return 'OK', header, None
-
-    return 'STALE_PROPOSAL_SEQ', None, None
+    return 'OK', header, None
 
 
 # Used for leader election - Ideally, this should be part of the client code.
@@ -141,7 +152,7 @@ async def paxos_client(header, body):
     proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
     # paxos PROMISE phase - block stale leaders from writing
-    res = await rpc('promise', [proposal_seq])
+    res = await rpc('promise', proposal_seq)
     if quorum > len(res):
         return 'NO_PROMISE_QUORUM', None, None
 
@@ -261,13 +272,10 @@ async def main():
             else:
                 shutil.rmtree(path)
 
-    server = commitlog.rpc.Server(
-        promise=paxos_server, accept=paxos_server,
-        logseq=logseq_server,
-        header=header_server, body=body_server,
-        grant=paxos_client, tail=tail_server)
-
-    await server(port, ctx)
+    await commitlog.rpc.server(port, cert, dict(
+        promise=paxos_promise, accept=paxos_accept, grant=paxos_client,
+        logseq=logseq_server, header=header_server, body=body_server,
+        tail=tail_server))
 
 
 if '__main__' == __name__:
