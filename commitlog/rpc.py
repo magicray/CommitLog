@@ -35,11 +35,13 @@ class Handler():
         self.methods = methods
 
     async def __call__(self, reader, writer):
-        peer = writer.get_extra_info('socket').getpeername()
+        peer = None
 
         while True:
             try:
                 try:
+                    peer = writer.get_extra_info('socket').getpeername()
+
                     req = await reader.readline()
                     if not req or len(req) > 1024:
                         if req:
@@ -120,16 +122,22 @@ class Client():
                 body = json.dumps(body).encode()
 
             length = len(body) if body else 0
+            header = json.dumps([method, header, length])
 
-            writer.write(json.dumps([method, header, length]).encode())
+            writer.write(header.encode())
             writer.write(b'\n')
             if length > 0:
                 writer.write(body)
             await writer.drain()
 
-            status, header, length = json.loads(await reader.readline())
+            header = await reader.readline()
+            assert (header), 'EMPTY_HEADER'
 
-            return status, header, await reader.readexactly(length)
+            status, header, length = json.loads(header)
+            body = await reader.readexactly(length)
+            assert (length == len(body)), f'INVALID_LEN {length} {len(body)}'
+
+            return status, header, body
         except Exception as e:
             log(e)
             if self.conns[server][1] is not None:
@@ -153,4 +161,7 @@ class Client():
     def __del__(self):
         for server, (reader, writer) in self.conns.items():
             if writer is not None:
-                writer.close()
+                try:
+                    writer.close()
+                except Exception as e:
+                    log(e)
