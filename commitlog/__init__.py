@@ -26,17 +26,19 @@ class Client():
         assert (blob and self.log_seq and self.proposal_seq)
 
         # Remove as the leader
+        log_seq = self.log_seq
         proposal_seq = self.proposal_seq
-        self.proposal_seq = None
+        self.log_seq = self.proposal_seq = None
 
         # paxos ACCEPT phase - write a new blob
-        hdr = [proposal_seq, self.log_seq + 1, str(uuid.uuid4())]
+        hdr = [proposal_seq, log_seq + 1, str(uuid.uuid4())]
         res = await self.rpc('accept', hdr, blob)
         hdrs = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
 
         # Reinstate the leader as the write is successful.
         if len(res) >= self.quorum and 1 == len(hdrs):
-            self.log_seq += 1
+            self.log_seq = log_seq + 1
+            self.proposal_seq = proposal_seq
             return json.loads(hdrs.pop())
 
     async def tail(self, seq):
