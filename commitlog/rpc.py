@@ -52,7 +52,7 @@ class Handler():
                     log(f'{peer} disconnected or invalid header')
                     return writer.close()
 
-                if method not in self.methods or length > 1024*1024:
+                if method not in self.methods or length > 10*1024*1024:
                     log(f'{peer} invalid request {req}')
                     return writer.close()
 

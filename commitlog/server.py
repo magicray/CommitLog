@@ -254,23 +254,18 @@ async def main():
     G.logdir = os.path.join('commitlog', G.log_id)
     os.makedirs(G.logdir, exist_ok=True)
 
-    data_dirs = sorted_dir(G.logdir)
-
     # Cleanup
+    data_dirs = sorted_dir(G.logdir)
     for f in os.listdir(G.logdir):
+        path = os.path.join(G.logdir, str(f))
+
         if 'promised' == f:
             continue
 
-        path = os.path.join(G.logdir, str(f))
+        if f.isdigit() and int(f) > data_dirs[0]-10 and os.path.isdir(path):
+            continue
 
-        if f.isdigit():
-            if int(f) < data_dirs[0] - 10:
-                shutil.rmtree(path)
-        else:
-            if os.path.isfile(path):
-                os.remove(path)
-            else:
-                shutil.rmtree(path)
+        os.remove(path) if os.path.isfile(path) else shutil.rmtree(path)
 
     await commitlog.rpc.server(port, cert, dict(
         promise=paxos_promise, accept=paxos_accept, grant=paxos_client,
