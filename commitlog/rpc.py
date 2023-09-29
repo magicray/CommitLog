@@ -131,7 +131,7 @@ class Client():
             await writer.drain()
 
             header = await reader.readline()
-            assert (header), 'EMPTY_HEADER'
+            assert (header), 'Connection Lost'
 
             status, header, length = json.loads(header)
             body = await reader.readexactly(length)
