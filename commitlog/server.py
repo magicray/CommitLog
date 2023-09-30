@@ -90,17 +90,17 @@ async def paxos_promise(header, body):
             promised_seq = json.load(fd)['promised_seq']
 
     # proposal_seq has to be strictly bigger than whatever seen so far
-    if proposal_seq <= promised_seq:
-        return 'STALE_PROPOSAL_SEQ', None, None
+    if proposal_seq > promised_seq:
+        dump(promise_filepath, dict(promised_seq=proposal_seq))
 
-    dump(promise_filepath, dict(promised_seq=proposal_seq))
+        log_seq = latest_logseq()
+        if 0 == log_seq:
+            return 'OK', dict(log_seq=0, accepted_seq=0), None
 
-    log_seq = latest_logseq()
-    if 0 == log_seq:
-        return 'OK', dict(log_seq=0, accepted_seq=0), None
+        with open(seq2path(log_seq), 'rb') as fd:
+            return 'OK', json.loads(fd.readline()), fd.read()
 
-    with open(seq2path(log_seq), 'rb') as fd:
-        return 'OK', json.loads(fd.readline()), fd.read()
+    return 'STALE_PROPOSAL_SEQ', None, None
 
 
 # ACCEPT - Client has sent the most recent value from the promise phase.
@@ -116,28 +116,28 @@ async def paxos_accept(header, body):
             promised_seq = json.load(fd)['promised_seq']
 
     # proposal_seq has to be bigger than or equal to the biggest seen so far
-    if proposal_seq < promised_seq:
-        return 'STALE_PROPOSAL_SEQ', None, None
+    if proposal_seq >= promised_seq:
+        # Continuous cleanup - remove an older file before writing a new one
+        # Retain only the most recent 1 million log records
+        old_log_record = seq2path(log_seq - 1000*1000)
+        if os.path.isfile(old_log_record):
+            os.remove(old_log_record)
+            log(f'removed old record log_seq({old_log_record})')
 
-    # Continuous cleanup - remove an older file before writing a new one
-    # Retain only the most recent 1 million log records
-    old_log_record = seq2path(log_seq - 1000*1000)
-    if os.path.isfile(old_log_record):
-        os.remove(old_log_record)
-        log(f'removed old record log_seq({old_log_record})')
+        # Record new proposal_seq as it is bigger.
+        # Any future writes with a smaller seq would be rejected.
+        if proposal_seq > promised_seq:
+            dump(promise_filepath, dict(promised_seq=proposal_seq))
 
-    # Record new proposal_seq as it is bigger.
-    # Any future writes with a smaller seq would be rejected.
-    if proposal_seq > promised_seq:
-        dump(promise_filepath, dict(promised_seq=proposal_seq))
+        header = dict(accepted_seq=proposal_seq, log_id=G.log_id,
+                      log_seq=log_seq, commit_id=commit_id,
+                      length=len(body), sha1=hashlib.sha1(body).hexdigest())
 
-    header = dict(accepted_seq=proposal_seq, log_id=G.log_id,
-                  log_seq=log_seq, commit_id=commit_id,
-                  length=len(body), sha1=hashlib.sha1(body).hexdigest())
+        dump(seq2path(log_seq), header, b'\n', body)
 
-    dump(seq2path(log_seq), header, b'\n', body)
+        return 'OK', header, None
 
-    return 'OK', header, None
+    return 'STALE_PROPOSAL_SEQ', None, None
 
 
 # Used for leader election - Ideally, this should be part of the client code.
@@ -210,13 +210,7 @@ async def tail_server(header, data):
                 k))                                # server
 
         hdrs = sorted(hdrs, reverse=True)
-        latest = hdrs[0][1]
-        all_ok = True
-        for i in range(quorum):
-            if latest != hdrs[i][1]:
-                all_ok = False
-
-        if all_ok is not True:
+        if not all([hdrs[0][1] == h[1] for h in hdrs[:quorum]]):
             yield 'WAIT', None, None
             await asyncio.sleep(1)
             continue
