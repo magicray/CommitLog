@@ -105,10 +105,18 @@ class Client():
             await writer.drain()
 
             while True:
-                status, header, length = json.loads(await reader.readline())
-                yield status, header, await reader.readexactly(length)
+                header = await reader.readline()
+                if header:
+                    status, header, length = json.loads(header)
+                    body = await reader.readexactly(length)
+                    if length == len(body):
+                        yield status, header, body
+                        continue
+
+                log(f'{server} disconnected or invalid header')
+                return
         except Exception as e:
-            log(e)
+            log(f'{server} {e}')
 
     async def server(self, server, method, header=None, body=b''):
         try:
