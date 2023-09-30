@@ -43,9 +43,8 @@ class Handler():
                     peer = writer.get_extra_info('socket').getpeername()
 
                     req = await reader.readline()
-                    if not req or len(req) > 10*1024:
-                        if req:
-                            log(f'{peer} header too long {len(req)} > 1KB')
+                    if not req:
+                        log(f'{peer} invalid header')
                         return writer.close()
 
                     req = req.decode().strip()
@@ -54,8 +53,8 @@ class Handler():
                     log(f'{peer} disconnected or invalid header')
                     return writer.close()
 
-                if method not in self.methods or length > 10*1024*1024:
-                    log(f'{peer} invalid request {req}')
+                if method not in self.methods:
+                    log(f'{peer} invalid method {method}')
                     return writer.close()
 
                 handler = self.methods[method]
