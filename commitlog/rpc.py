@@ -43,7 +43,7 @@ class Handler():
                     peer = writer.get_extra_info('socket').getpeername()
 
                     req = await reader.readline()
-                    if not req or len(req) > 1024:
+                    if not req or len(req) > 10*1024:
                         if req:
                             log(f'{peer} header too long {len(req)} > 1KB')
                         return writer.close()
@@ -54,7 +54,7 @@ class Handler():
                     log(f'{peer} disconnected or invalid header')
                     return writer.close()
 
-                if method not in self.methods or length > 5*1024*1024:
+                if method not in self.methods or length > 10*1024*1024:
                     log(f'{peer} invalid request {req}')
                     return writer.close()
 
@@ -96,6 +96,8 @@ class Client():
         self.conns = {tuple(srv): (None, None) for srv in servers}
 
     async def stream(self, server, method, header):
+        writer = None
+
         try:
             reader, writer = await asyncio.open_connection(
                 server[0], server[1], ssl=self.SSL)
@@ -114,8 +116,12 @@ class Client():
                         continue
 
                 log(f'{server} disconnected or invalid header')
+                writer.close()
                 return
         except Exception as e:
+            if writer:
+                writer.close()
+
             log(f'{server} {e}')
 
     async def server(self, server, method, header=None, body=b''):
