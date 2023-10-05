@@ -135,6 +135,7 @@ async def paxos_accept(header, body):
 
         dump(seq2path(log_seq), header, b'\n', body)
 
+        header.pop('accepted_seq')
         return 'OK', header, None
 
     return 'STALE_PROPOSAL_SEQ', None, None
