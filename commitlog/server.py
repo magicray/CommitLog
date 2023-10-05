@@ -216,27 +216,31 @@ async def tail_server(header, data):
             continue
 
         path = seq2path(seq)
+        body = None
         if os.path.isfile(path):
-            body = None
             with open(path, 'rb') as fd:
-                obj = json.loads(fd.readline())
-                tmp = obj.copy()
-                tmp.pop('accepted_seq')
-                if hdrs[0][1] == json.dumps(tmp, sort_keys=True):
+                hdr = json.loads(fd.readline())
+                hdr.pop('accepted_seq')
+                if hdrs[0][1] == json.dumps(hdr, sort_keys=True):
                     body = fd.read()
 
-            if body:
-                assert (obj['length'] == len(body))
-                yield 'OK', obj, body
-                seq = seq + 1
+        if body:
+            assert (hdr['length'] == len(body))
+            yield 'OK', hdr, body
+            seq = seq + 1
+        else:
+            result = await rpc.server(hdrs[0][2], 'body', seq)
+            if result and 'OK' == result[0]:
+                assert (result[1]['length'] == len(result[2]))
 
-        result = await rpc.server(hdrs[0][2], 'body', seq)
-        if not result or 'OK' != result[0]:
-            yield 'WAIT', None, None
-            await asyncio.sleep(1)
-            continue
+                tmp = result[1].copy()
+                tmp.pop('accepted_seq')
+                assert (hdrs[0][1] == json.dumps(tmp, sort_keys=True))
 
-        dump(path, result[1], b'\n', result[2])
+                dump(path, result[1], b'\n', result[2])
+            else:
+                yield 'WAIT', None, None
+                await asyncio.sleep(1)
 
 
 class G:
