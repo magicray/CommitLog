@@ -23,7 +23,7 @@ class Client():
             return self.log_seq
 
     async def commit(self, blob):
-        assert (blob and self.log_seq and self.proposal_seq)
+        assert (blob and self.proposal_seq and self.log_seq is not None)
 
         # Remove as the leader
         log_seq = self.log_seq

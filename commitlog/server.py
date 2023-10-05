@@ -215,17 +215,28 @@ async def tail_server(header, data):
             await asyncio.sleep(1)
             continue
 
+        path = seq2path(seq)
+        if os.path.isfile(path):
+            body = None
+            with open(path, 'rb') as fd:
+                obj = json.loads(fd.readline())
+                tmp = obj.copy()
+                tmp.pop('accepted_seq')
+                if hdrs[0][1] == json.dumps(tmp, sort_keys=True):
+                    body = fd.read()
+
+            if body:
+                assert (obj['length'] == len(body))
+                yield 'OK', obj, body
+                seq = seq + 1
+
         result = await rpc.server(hdrs[0][2], 'body', seq)
         if not result or 'OK' != result[0]:
             yield 'WAIT', None, None
             await asyncio.sleep(1)
             continue
 
-        result[1].pop('accepted_seq')
-        assert (hdrs[0][1] == json.dumps(result[1], sort_keys=True))
-
-        yield 'OK', result[1], result[2]
-        seq = seq + 1
+        dump(path, result[1], b'\n', result[2])
 
 
 class G:
