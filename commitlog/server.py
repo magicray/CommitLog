@@ -83,15 +83,12 @@ def dump(path, *objects):
 async def paxos_promise(header, body):
     proposal_seq = header
 
-    promised_seq = 0
-    promise_filepath = os.path.join(G.logdir, 'promised')
-    if os.path.isfile(promise_filepath):
-        with open(promise_filepath) as fd:
-            promised_seq = json.load(fd)['promised_seq']
+    with open(G.promise_filepath) as fd:
+        promised_seq = json.load(fd)['promised_seq']
 
     # proposal_seq has to be strictly bigger than whatever seen so far
     if proposal_seq > promised_seq:
-        dump(promise_filepath, dict(promised_seq=proposal_seq))
+        dump(G.promise_filepath, dict(promised_seq=proposal_seq))
 
         log_seq = latest_logseq()
         if 0 == log_seq:
@@ -109,11 +106,8 @@ async def paxos_promise(header, body):
 async def paxos_accept(header, body):
     proposal_seq, log_seq, commit_id = header
 
-    promised_seq = 0
-    promise_filepath = os.path.join(G.logdir, 'promised')
-    if os.path.isfile(promise_filepath):
-        with open(promise_filepath) as fd:
-            promised_seq = json.load(fd)['promised_seq']
+    with open(G.promise_filepath) as fd:
+        promised_seq = json.load(fd)['promised_seq']
 
     # proposal_seq has to be bigger than or equal to the biggest seen so far
     if proposal_seq >= promised_seq:
@@ -127,7 +121,7 @@ async def paxos_accept(header, body):
         # Record new proposal_seq as it is bigger.
         # Any future writes with a smaller seq would be rejected.
         if proposal_seq > promised_seq:
-            dump(promise_filepath, dict(promised_seq=proposal_seq))
+            dump(G.promise_filepath, dict(promised_seq=proposal_seq))
 
         header = dict(accepted_seq=proposal_seq, log_id=G.log_id,
                       log_seq=log_seq, commit_id=commit_id,
@@ -262,7 +256,11 @@ async def main():
 
     G.log_id = str(guid)
     G.logdir = os.path.join('commitlog', G.log_id)
+    G.promise_filepath = os.path.join(G.logdir, 'promised')
+
     os.makedirs(G.logdir, exist_ok=True)
+    if not os.path.isfile(G.promise_filepath):
+        dump(G.promise_filepath, dict(promised_seq=0))
 
     # Cleanup
     data_dirs = sorted_dir(G.logdir)
