@@ -173,16 +173,14 @@ async def paxos_client(header, body):
     if 0 == log_seq or not blob:
         return 'BLOB_NOT_FOUND', None, None
 
-    # paxos ACCEPT phase - write a blob to bring all nodes in sync
+    # paxos ACCEPT phase - re-write the last blob to bring all nodes in sync
     res = await rpc('accept', [proposal_seq, log_seq, commit_id], blob)
-    if quorum > len(res):
+    hdrs = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
+
+    if quorum > len(res) or 1 != len(hdrs):
         return 'NO_ACCEPT_QUORUM', None, None
 
-    hdrs = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
-    if 1 == len(hdrs):
-        return 'OK', [proposal_seq, json.loads(hdrs.pop())['log_seq']], None
-
-    return 'ACCEPT_FAILED', None, None
+    return 'OK', [proposal_seq, json.loads(hdrs.pop())['log_seq']], None
 
 
 async def tail_server(header, data):
