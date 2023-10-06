@@ -10,7 +10,6 @@ import hashlib
 import asyncio
 import logging
 import commitlog.rpc
-from logging import critical as log
 
 
 def path_join(*path):
@@ -106,6 +105,9 @@ async def paxos_promise(header, body):
 async def paxos_accept(header, body):
     proposal_seq, log_seq, commit_id = header
 
+    if not body:
+        return 'EMPTY_BLOB', None, None
+
     with open(G.promise_filepath) as fd:
         promised_seq = json.load(fd)['promised_seq']
 
@@ -116,9 +118,8 @@ async def paxos_accept(header, body):
         old_log_record = seq2path(log_seq - 1000*1000)
         if os.path.isfile(old_log_record):
             os.remove(old_log_record)
-            log(f'removed old record log_seq({old_log_record})')
 
-        # Record new proposal_seq as it is bigger.
+        # Record new proposal_seq as it is bigger than the current value.
         # Any future writes with a smaller seq would be rejected.
         if proposal_seq > promised_seq:
             dump(G.promise_filepath, dict(promised_seq=proposal_seq))
@@ -169,7 +170,7 @@ async def paxos_client(header, body):
             commit_id = header['commit_id']
             accepted_seq = header['accepted_seq']
 
-    if 0 == log_seq:
+    if 0 == log_seq or not blob:
         return 'BLOB_NOT_FOUND', None, None
 
     # paxos ACCEPT phase - write a blob to bring all nodes in sync
@@ -258,7 +259,6 @@ async def main():
     G.logdir = os.path.join('commitlog', G.log_id)
     G.promise_filepath = os.path.join(G.logdir, 'promised')
 
-    os.makedirs(G.logdir, exist_ok=True)
     if not os.path.isfile(G.promise_filepath):
         dump(G.promise_filepath, dict(promised_seq=0))
 
