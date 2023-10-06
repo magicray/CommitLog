@@ -1,5 +1,6 @@
 import json
 import uuid
+import random
 import asyncio
 import commitlog.rpc
 
@@ -43,13 +44,13 @@ class Client():
 
     async def tail(self, seq):
         while True:
-            for server in self.servers:
-                header = [seq, self.servers]
-                async for response in self.rpc.stream(server, 'tail', header):
-                    status, header, body = response
+            server = random.choice(self.servers)
+            header = [seq, self.servers]
+            async for response in self.rpc.stream(server, 'tail', header):
+                status, header, body = response
 
-                    if 'OK' == status:
-                        yield header, body
-                        seq = header['log_seq'] + 1
+                if 'OK' == status:
+                    yield header, body
+                    seq = header['log_seq'] + 1
 
-                await asyncio.sleep(1)
+            await asyncio.sleep(1)
