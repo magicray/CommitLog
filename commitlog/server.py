@@ -25,40 +25,19 @@ def sorted_dir(dirname):
     return sorted(files, reverse=True)
 
 
-def latest_logseq():
-    # Traverse the three level directory hierarchy,
-    # picking the highest numbered dir/file at each level
-    for x in sorted_dir(G.logdir):
-        for y in sorted_dir(path_join(G.logdir, x)):
-            for f in sorted_dir(path_join(G.logdir, x, y)):
-                return f
-
-    return 0
-
-
 @commitlog.rpc.async_generator
-async def logseq_server(header, body):
-    return 'OK', latest_logseq(), None
+async def blob_server(header, body):
+    seq, what = header
 
-
-@commitlog.rpc.async_generator
-async def header_server(header, body):
-    path = seq2path(header)
+    path = seq2path(seq)
     if not os.path.isfile(path):
         return 'NOTFOUND', None, None
 
     with open(path, 'rb') as fd:
-        return 'OK', json.loads(fd.readline()), None
+        hdr = json.loads(fd.readline())
+        body = fd.read() if 'body' == what else None
 
-
-@commitlog.rpc.async_generator
-async def body_server(header, body):
-    path = seq2path(header)
-    if not os.path.isfile(path):
-        return 'NOTFOUND', None, None
-
-    with open(path, 'rb') as fd:
-        return 'OK', json.loads(fd.readline()), fd.read()
+        return 'OK', hdr, body
 
 
 def dump(path, *objects):
@@ -89,12 +68,15 @@ async def paxos_promise(header, body):
     if proposal_seq > promised_seq:
         dump(G.promise_filepath, dict(promised_seq=proposal_seq))
 
-        log_seq = latest_logseq()
-        if 0 == log_seq:
-            return 'OK', dict(log_seq=0, accepted_seq=0), None
+        # Traverse the three level directory hierarchy,
+        # picking the highest numbered dir/file at each level
+        for x in sorted_dir(G.logdir):
+            for y in sorted_dir(path_join(G.logdir, x)):
+                for f in sorted_dir(path_join(G.logdir, x, y)):
+                    with open(seq2path(f), 'rb') as fd:
+                        return 'OK', json.loads(fd.readline()), fd.read()
 
-        with open(seq2path(log_seq), 'rb') as fd:
-            return 'OK', json.loads(fd.readline()), fd.read()
+        return 'OK', dict(log_seq=0, accepted_seq=0), None
 
     return 'STALE_PROPOSAL_SEQ', None, None
 
@@ -124,14 +106,14 @@ async def paxos_accept(header, body):
         if proposal_seq > promised_seq:
             dump(G.promise_filepath, dict(promised_seq=proposal_seq))
 
-        header = dict(accepted_seq=proposal_seq, log_id=G.log_id,
-                      log_seq=log_seq, commit_id=commit_id,
-                      length=len(body), sha1=hashlib.sha1(body).hexdigest())
+        hdr = dict(accepted_seq=proposal_seq, log_id=G.log_id,
+                   log_seq=log_seq, commit_id=commit_id,
+                   length=len(body), sha1=hashlib.sha1(body).hexdigest())
 
-        dump(seq2path(log_seq), header, b'\n', body)
+        dump(seq2path(log_seq), hdr, b'\n', body)
 
-        header.pop('accepted_seq')
-        return 'OK', header, None
+        hdr.pop('accepted_seq')
+        return 'OK', hdr, None
 
     return 'STALE_PROPOSAL_SEQ', None, None
 
@@ -190,7 +172,7 @@ async def tail_server(header, data):
     quorum = int(len(servers)/2) + 1
 
     while True:
-        res = await rpc('header', seq)
+        res = await rpc('blob', [seq, 'header'])
         if quorum > len(res):
             yield 'WAIT', None, None
             await asyncio.sleep(1)
@@ -223,7 +205,7 @@ async def tail_server(header, data):
             yield 'OK', hdr, body
             seq = seq + 1
         else:
-            result = await rpc.server(hdrs[0][2], 'body', seq)
+            result = await rpc.server(hdrs[0][2], 'blob', [seq, 'body'])
             if result and 'OK' == result[0]:
                 assert (result[1]['length'] == len(result[2]))
 
@@ -275,8 +257,7 @@ async def main():
 
     await commitlog.rpc.server(port, cert, dict(
         promise=paxos_promise, accept=paxos_accept, grant=paxos_client,
-        logseq=logseq_server, header=header_server, body=body_server,
-        tail=tail_server))
+        blob=blob_server, tail=tail_server))
 
 
 if '__main__' == __name__:
