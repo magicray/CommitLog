@@ -64,13 +64,19 @@ class Server():
                 res = await self.methods[method](**params)
                 res = res if res else b''
                 status = '200 OK' if res else '400 Bad Request'
+                mime_type = 'application/octet-stream'
                 if type(res) is not bytes:
-                    res = json.dumps(res, sort_keys=True).encode()
+                    res = json.dumps(res, indent=4, sort_keys=True).encode()
+                    mime_type = 'application/json'
 
                 try:
                     writer.write(f'HTTP/1.1 {status}\n'.encode())
-                    writer.write(f'content-length: {len(res)}\n\n'.encode())
-                    writer.write(res)
+                    writer.write(f'content-length: {len(res)}\n'.encode())
+                    if res:
+                        writer.write(f'content-type: {mime_type}\n\n'.encode())
+                        writer.write(res)
+                    else:
+                        writer.write(b'\n')
                     await writer.drain()
                 except Exception:
                     log(f'{peer} disconnected or invalid header')
@@ -126,9 +132,14 @@ class Client():
                 k, v = line.decode().split(':', maxsplit=1)
                 if 'content-length' == k.strip().lower():
                     length = int(v.strip())
+                if 'content-type' == k.strip().lower():
+                    mime_type = v.strip()
 
             if length > 0:
-                return await reader.readexactly(length)
+                octets = await reader.readexactly(length)
+                if 'application/json' == mime_type:
+                    return json.loads(octets)
+                return octets
         except Exception as e:
             log(e)
             if self.conns[server][1] is not None:

@@ -1,5 +1,4 @@
 import sys
-import json
 import time
 import asyncio
 import logging
@@ -20,15 +19,13 @@ async def main():
     quorum = int(len(srvs)/2) + 1
 
     try:
-        srv_list = ','.join(servers)
-        res = await client.cluster(f'init/servers/{srv_list}')
-        res = sorted([json.loads(r) for r in res.values()])
-
-        if not res:
+        url = '/init/servers/{}'.format(','.join(servers))
+        vlist = sorted((await client.cluster(url)).values())
+        if not vlist:
             log('could not get proposal_seq')
             exit(1)
 
-        proposal_seq, log_seq = res[-1]
+        proposal_seq, log_seq = vlist[-1]
 
         while True:
             blob = sys.stdin.buffer.read(1024*1024)
@@ -37,16 +34,15 @@ async def main():
 
             ts = time.time()
             log_seq += 1
-            url = f'commit/proposal_seq/{proposal_seq}/log_seq/{log_seq}'
-            res = await client.cluster(url, blob)
-            vset = set(res.values())
-            if quorum > len(res) or 1 != len(vset):
+
+            url = f'/commit/proposal_seq/{proposal_seq}/log_seq/{log_seq}'
+            vlist = list((await client.cluster(url, blob)).values())
+            if quorum > len(vlist) or not all([vlist[0] == v for v in vlist]):
                 log('commit failed')
                 exit(1)
 
-            result = json.loads(vset.pop())
-            result['msec'] = int((time.time() - ts) * 1000)
-            log(result)
+            vlist[0]['msec'] = int((time.time() - ts) * 1000)
+            log(vlist[0])
     except Exception as e:
         log(e)
         exit(1)

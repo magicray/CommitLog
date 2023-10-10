@@ -67,7 +67,8 @@ async def paxos_promise(proposal_seq):
                     with open(seq2path(f), 'rb') as fd:
                         return fd.read()
 
-        return dict(log_seq=0, accepted_seq=0, length=0)
+        hdr = dict(log_seq=0, accepted_seq=0)
+        return json.dumps(hdr, sort_keys=True).encode() + b'\n'
 
 
 # ACCEPT - Client has sent the most recent value from the promise phase.
@@ -113,7 +114,7 @@ async def paxos_client(servers):
     proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
     # Paxos PROMISE phase - block stale leaders from writing
-    res = await rpc.cluster(f'promise/proposal_seq/{proposal_seq}')
+    res = await rpc.cluster(f'/promise/proposal_seq/{proposal_seq}')
     if quorum > len(res):
         return
 
@@ -141,12 +142,11 @@ async def paxos_client(servers):
         return
 
     # Paxos ACCEPT phase - re-write the last blob to bring all nodes in sync
-    url = f'commit/proposal_seq/{proposal_seq}/log_seq/{log_seq}'
-    res = await rpc.cluster(url, blob)
-    vset = set(res.values())
+    url = f'/commit/proposal_seq/{proposal_seq}/log_seq/{log_seq}'
+    vlist = list((await rpc.cluster(url, blob)).values())
 
-    if len(res) >= quorum and 1 == len(vset):
-        return [proposal_seq, json.loads(vset.pop())['log_seq']]
+    if len(vlist) >= quorum and all([vlist[0] == v for v in vlist]):
+        return [proposal_seq, json.loads(vlist[0])['log_seq']]
 
 
 async def tail(header, data):
