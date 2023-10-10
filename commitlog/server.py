@@ -25,11 +25,11 @@ def sorted_dir(dirname):
     return sorted(files, reverse=True)
 
 
-async def fetch(seq, what, body):
-    path = seq2path(int(seq))
+async def fetch(log_seq, what):
+    path = seq2path(int(log_seq))
     if os.path.isfile(path):
         with open(path, 'rb') as fd:
-            return fd.read() if 'body' == what else fd.readline()
+            return fd.read() if 'body' == what else json.loads(fd.readline())
 
 
 def dump(path, *objects):
@@ -149,58 +149,54 @@ async def paxos_client(servers):
         return [proposal_seq, json.loads(vlist[0])['log_seq']]
 
 
-async def tail(header, data):
-    cert, (seq, servers) = sys.argv[1], header
+async def tail(log_seq, servers):
+    seq = int(log_seq)
 
-    rpc = commitlog.http.Client(cert, servers)
+    servers = [s.split(':') for s in servers.split(',')]
+    servers = [(ip, int(port)) for ip, port in servers]
+
+    rpc = commitlog.http.Client(sys.argv[1], servers)
     quorum = int(len(servers)/2) + 1
 
-    while True:
-        res = await rpc('blob', [seq, 'header'])
-        if quorum > len(res):
-            yield 'WAIT', None, None
-            await asyncio.sleep(1)
-            continue
+    res = await rpc.cluster(f'/fetch/log_seq/{seq}/what/header')
+    if quorum > len(res):
+        return
 
-        hdrs = list()
-        for k, v in res.items():
-            hdrs.append((
-                v[0].pop('accepted_seq'),          # accepted seq
-                json.dumps(v[0], sort_keys=True),  # record metadata
-                k))                                # server
+    hdrs = list()
+    for k, v in res.items():
+        # accepted seq, header, server
+        hdrs.append((v.pop('accepted_seq'), v, k))
 
-        hdrs = sorted(hdrs, reverse=True)
-        if not all([hdrs[0][1] == h[1] for h in hdrs[:quorum]]):
-            yield 'WAIT', None, None
-            await asyncio.sleep(1)
-            continue
+    hdrs = sorted(hdrs, reverse=True)
+    if not all([hdrs[0][1] == h[1] for h in hdrs[:quorum]]):
+        return
 
-        path = seq2path(seq)
-        body = None
-        if os.path.isfile(path):
-            with open(path, 'rb') as fd:
-                hdr = json.loads(fd.readline())
-                hdr.pop('accepted_seq')
-                if hdrs[0][1] == json.dumps(hdr, sort_keys=True):
-                    body = fd.read()
+    body = None
+    path = seq2path(seq)
+    if os.path.isfile(path):
+        with open(path, 'rb') as fd:
+            header = fd.readline()
+            hdr = json.loads(header)
+            hdr.pop('accepted_seq')
+            if hdrs[0][1] == hdr:
+                body = fd.read()
 
-        if body:
-            assert (hdr['length'] == len(body))
-            yield 'OK', hdr, body
-            seq = seq + 1
-        else:
-            result = await rpc.server(hdrs[0][2], 'blob', [seq, 'body'])
-            if result and 'OK' == result[0]:
-                assert (result[1]['length'] == len(result[2]))
+    if body:
+        assert (hdr['length'] == len(body))
+        return json.dumps(hdr, sort_keys=True).encode() + b'\n' + body
 
-                tmp = result[1].copy()
-                tmp.pop('accepted_seq')
-                assert (hdrs[0][1] == json.dumps(tmp, sort_keys=True))
+    url = f'/blob/log_seq/{seq}/what/body'
+    result = await rpc.server(hdrs[0][2], url)
+    if result:
+        header, body = result.split(b'\n', max_split=1)
+        hdr = json.loads(header)
+        assert (hdr['length'] == len(body))
 
-                dump(path, result[1], b'\n', result[2])
-            else:
-                yield 'WAIT', None, None
-                await asyncio.sleep(1)
+        hdr.pop('accepted_seq')
+        assert (hdrs[0][1] == hdr)
+
+        dump(path, hdr, b'\n', body)
+        return json.dumps(hdr, sort_keys=True).encode() + b'\n' + body
 
 
 class G:

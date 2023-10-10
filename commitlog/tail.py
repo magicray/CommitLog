@@ -2,11 +2,11 @@ import os
 import re
 import sys
 import ssl
-import json
 import uuid
+import random
 import asyncio
 import logging
-import commitlog
+import commitlog.http
 from logging import critical as log
 
 
@@ -46,24 +46,30 @@ async def main():
     servers = [(ip, int(port)) for ip, port in servers]
 
     seq = max_seq(logdir) + 1
-    client = commitlog.Client(cert, servers)
+    client = commitlog.http.Client(cert, servers)
 
+    server = random.choice(servers)
     while True:
-        async for header, body in client.tail(seq):
-            l1, l2 = seq//(1000**2), seq//1000
-            logfile = os.path.join(logdir, str(l1), str(l2), str(seq))
+        url = '/tail/log_seq/{}/servers/{}'.format(seq, ','.join(sys.argv[2:]))
+        res = await client.server(server, url)
+        if not res:
+            await asyncio.sleep(5)
+            server = random.choice(servers)
+            continue
 
-            tmpfile = os.path.join(logdir, str(uuid.uuid4()) + '.tmp')
-            with open(tmpfile, 'wb') as fd:
-                fd.write(body)
-            os.makedirs(os.path.dirname(logfile), exist_ok=True)
-            os.replace(tmpfile, logfile)
+        l1, l2 = seq//(100000), seq//1000
+        logfile = os.path.join(logdir, str(l1), str(l2), str(seq))
 
-            log(json.dumps(header, sort_keys=True))
+        tmpfile = os.path.join(logdir, str(uuid.uuid4()) + '.tmp')
+        with open(tmpfile, 'wb') as fd:
+            fd.write(res)
+        os.makedirs(os.path.dirname(logfile), exist_ok=True)
+        os.replace(tmpfile, logfile)
 
-            seq = header['log_seq'] + 1
+        with open(logfile) as fd:
+            log(fd.readline().strip())
 
-        await asyncio.sleep(1)
+        seq += 1
 
 
 if '__main__' == __name__:
