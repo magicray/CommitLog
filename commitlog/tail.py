@@ -53,7 +53,7 @@ async def main():
         url = '/tail/log_seq/{}/servers/{}'.format(seq, ','.join(sys.argv[2:]))
         res = await client.server(server, url)
         if not res:
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
             server = random.choice(servers)
             continue
 

@@ -146,7 +146,7 @@ async def paxos_client(servers):
     vlist = list((await rpc.cluster(url, blob)).values())
 
     if len(vlist) >= quorum and all([vlist[0] == v for v in vlist]):
-        return [proposal_seq, json.loads(vlist[0])['log_seq']]
+        return [proposal_seq, vlist[0]['log_seq']]
 
 
 async def tail(log_seq, servers):
