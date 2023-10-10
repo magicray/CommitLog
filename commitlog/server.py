@@ -9,7 +9,7 @@ import shutil
 import hashlib
 import asyncio
 import logging
-import commitlog.rpc
+import commitlog.http
 
 
 def path_join(*path):
@@ -25,19 +25,11 @@ def sorted_dir(dirname):
     return sorted(files, reverse=True)
 
 
-@commitlog.rpc.async_generator
-async def blob_server(header, body):
-    seq, what = header
-
-    path = seq2path(seq)
-    if not os.path.isfile(path):
-        return 'NOTFOUND', None, None
-
-    with open(path, 'rb') as fd:
-        hdr = json.loads(fd.readline())
-        body = fd.read() if 'body' == what else None
-
-        return 'OK', hdr, body
+async def fetch(seq, what, body):
+    path = seq2path(int(seq))
+    if os.path.isfile(path):
+        with open(path, 'rb') as fd:
+            return fd.read() if 'body' == what else fd.readline()
 
 
 def dump(path, *objects):
@@ -57,9 +49,8 @@ def dump(path, *objects):
 
 # PROMISE - Block stale leaders and return the most recent accepted value.
 # Client will propose the most recent across servers in the accept phase
-@commitlog.rpc.async_generator
-async def paxos_promise(header, body):
-    proposal_seq = header
+async def paxos_promise(proposal_seq):
+    proposal_seq = int(proposal_seq)
 
     with open(G.promise_filepath) as fd:
         promised_seq = json.load(fd)['promised_seq']
@@ -74,21 +65,16 @@ async def paxos_promise(header, body):
             for y in sorted_dir(path_join(G.logdir, x)):
                 for f in sorted_dir(path_join(G.logdir, x, y)):
                     with open(seq2path(f), 'rb') as fd:
-                        return 'OK', json.loads(fd.readline()), fd.read()
+                        return fd.read()
 
-        return 'OK', dict(log_seq=0, accepted_seq=0), None
-
-    return 'STALE_PROPOSAL_SEQ', None, None
+        return dict(log_seq=0, accepted_seq=0, length=0)
 
 
 # ACCEPT - Client has sent the most recent value from the promise phase.
 # Stale leaders blocked. Only the most recent can reach this stage.
-@commitlog.rpc.async_generator
-async def paxos_accept(header, body):
-    proposal_seq, log_seq, commit_id = header
-
-    if not body:
-        return 'EMPTY_BLOB', None, None
+async def paxos_accept(proposal_seq, log_seq, blob):
+    log_seq = int(log_seq)
+    proposal_seq = int(proposal_seq)
 
     with open(G.promise_filepath) as fd:
         promised_seq = json.load(fd)['promised_seq']
@@ -106,69 +92,67 @@ async def paxos_accept(header, body):
         if proposal_seq > promised_seq:
             dump(G.promise_filepath, dict(promised_seq=proposal_seq))
 
-        hdr = dict(accepted_seq=proposal_seq, log_id=G.log_id,
-                   log_seq=log_seq, commit_id=commit_id,
-                   length=len(body), sha1=hashlib.sha1(body).hexdigest())
+        hdr = dict(accepted_seq=proposal_seq, log_id=G.log_id, log_seq=log_seq,
+                   length=len(blob), sha1=hashlib.sha1(blob).hexdigest())
 
-        dump(seq2path(log_seq), hdr, b'\n', body)
-
-        hdr.pop('accepted_seq')
-        return 'OK', hdr, None
-
-    return 'STALE_PROPOSAL_SEQ', None, None
+        if blob:
+            dump(seq2path(log_seq), hdr, b'\n', blob)
+            hdr.pop('accepted_seq')
+            return hdr
 
 
 # Used for leader election - Ideally, this should be part of the client code.
 # However, since leader election is done infrequently, its more maintainable to
 # keep this code here and call it over RPC. This makes client very lightweight.
-@commitlog.rpc.async_generator
-async def paxos_client(header, body):
-    cert, servers = sys.argv[1], header
+async def paxos_client(servers):
+    servers = [s.split(':') for s in servers.split(',')]
+    servers = [(ip, int(port)) for ip, port in servers]
 
-    rpc = commitlog.rpc.Client(cert, servers)
+    rpc = commitlog.http.Client(sys.argv[1], servers)
     quorum = int(len(servers)/2) + 1
     proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
-    # paxos PROMISE phase - block stale leaders from writing
-    res = await rpc('promise', proposal_seq)
+    # Paxos PROMISE phase - block stale leaders from writing
+    res = await rpc.cluster(f'promise/proposal_seq/{proposal_seq}')
     if quorum > len(res):
-        return 'NO_PROMISE_QUORUM', None, None
+        return
 
-    hdrs = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
+    hdrs = set(res.values())
     if 1 == len(hdrs):
-        return 'OK', [proposal_seq, json.loads(hdrs.pop())['log_seq']], None
+        header = hdrs.pop().split(b'\n', maxsplit=1)[0]
+        return [proposal_seq, json.loads(header)['log_seq']]
 
-    # This is the CRUX of the paxos protocol
-    # Find the most recent log_seq with most recent accepted_seq
-    # Only this value should be proposed, else everything breaks
+    # CRUX of the paxos protocol - Find the most recent log_seq with most
+    # recent accepted_seq. Only this value should be proposed
     log_seq = accepted_seq = 0
-    for header, body in res.values():
+    for val in res.values():
+        header, body = val.split(b'\n', maxsplit=1)
+        header = json.loads(header)
+
         old = log_seq, accepted_seq
         new = header['log_seq'], header['accepted_seq']
 
         if new > old:
             blob = body
             log_seq = header['log_seq']
-            commit_id = header['commit_id']
             accepted_seq = header['accepted_seq']
 
     if 0 == log_seq or not blob:
-        return 'BLOB_NOT_FOUND', None, None
+        return
 
-    # paxos ACCEPT phase - re-write the last blob to bring all nodes in sync
-    res = await rpc('accept', [proposal_seq, log_seq, commit_id], blob)
-    hdrs = {json.dumps(h, sort_keys=True) for h, _ in res.values()}
+    # Paxos ACCEPT phase - re-write the last blob to bring all nodes in sync
+    url = f'commit/proposal_seq/{proposal_seq}/log_seq/{log_seq}'
+    res = await rpc.cluster(url, blob)
+    vset = set(res.values())
 
-    if quorum > len(res) or 1 != len(hdrs):
-        return 'NO_ACCEPT_QUORUM', None, None
-
-    return 'OK', [proposal_seq, json.loads(hdrs.pop())['log_seq']], None
+    if len(res) >= quorum and 1 == len(vset):
+        return [proposal_seq, json.loads(vset.pop())['log_seq']]
 
 
-async def tail_server(header, data):
+async def tail(header, data):
     cert, (seq, servers) = sys.argv[1], header
 
-    rpc = commitlog.rpc.Client(cert, servers)
+    rpc = commitlog.http.Client(cert, servers)
     quorum = int(len(servers)/2) + 1
 
     while True:
@@ -229,8 +213,8 @@ async def main():
 
     cert, port = sys.argv[1], int(sys.argv[2])
 
-    ctx = commitlog.rpc.Certificate.context(cert, ssl.Purpose.CLIENT_AUTH)
-    sub = commitlog.rpc.Certificate.subject(ctx)
+    ctx = commitlog.http.Certificate.context(cert, ssl.Purpose.CLIENT_AUTH)
+    sub = commitlog.http.Certificate.subject(ctx)
 
     # Extract UUID from the subject. This would be the log_id for this stream
     guid = uuid.UUID(re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}', sub)[0])
@@ -255,9 +239,11 @@ async def main():
 
         os.remove(path) if os.path.isfile(path) else shutil.rmtree(path)
 
-    await commitlog.rpc.server(port, cert, dict(
-        promise=paxos_promise, accept=paxos_accept, grant=paxos_client,
-        blob=blob_server, tail=tail_server))
+    server = commitlog.http.Server(dict(
+        init=paxos_client, promise=paxos_promise, commit=paxos_accept,
+        fetch=fetch, tail=tail))
+
+    await server.run(port, cert)
 
 
 if '__main__' == __name__:
