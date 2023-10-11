@@ -9,20 +9,17 @@ import shutil
 import hashlib
 import asyncio
 import logging
+import commitlog
 import commitlog.http
 
 
-def path_join(*path):
-    return os.path.join(*[str(p) for p in path])
-
-
 def seq2path(log_seq):
-    return path_join(G.logdir, log_seq//100000, log_seq//1000, log_seq)
+    return commitlog.seq2path(G.logdir, log_seq)
 
 
-def sorted_dir(dirname):
-    files = [int(f) for f in os.listdir(dirname) if f.isdigit()]
-    return sorted(files, reverse=True)
+def dump(path, *objects):
+    commitlog.dump(G.logdir, path, *objects)
+    os.sync()
 
 
 async def fetch(log_seq, what):
@@ -30,21 +27,6 @@ async def fetch(log_seq, what):
     if os.path.isfile(path):
         with open(path, 'rb') as fd:
             return fd.read() if 'body' == what else json.loads(fd.readline())
-
-
-def dump(path, *objects):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-    tmp = os.path.join(G.logdir, str(uuid.uuid4()) + '.tmp')
-    with open(tmp, 'wb') as fd:
-        for obj in objects:
-            if type(obj) is not bytes:
-                obj = json.dumps(obj, sort_keys=True).encode()
-
-            fd.write(obj)
-
-    os.replace(tmp, path)
-    os.sync()
 
 
 # PROMISE - Block stale leaders and return the most recent accepted value.
@@ -59,13 +41,10 @@ async def paxos_promise(proposal_seq):
     if proposal_seq > promised_seq:
         dump(G.promise_filepath, dict(promised_seq=proposal_seq))
 
-        # Traverse the three level directory hierarchy,
-        # picking the highest numbered dir/file at each level
-        for x in sorted_dir(G.logdir):
-            for y in sorted_dir(path_join(G.logdir, x)):
-                for f in sorted_dir(path_join(G.logdir, x, y)):
-                    with open(seq2path(f), 'rb') as fd:
-                        return fd.read()
+        max_seq = commitlog.max_seq(G.logdir)
+        if max_seq > 0:
+            with open(seq2path(max_seq), 'rb') as fd:
+                return fd.read()
 
         hdr = dict(log_seq=0, accepted_seq=0)
         return json.dumps(hdr, sort_keys=True).encode() + b'\n'
@@ -149,56 +128,6 @@ async def paxos_client(servers):
         return [proposal_seq, vlist[0]['log_seq']]
 
 
-async def tail(log_seq, servers):
-    seq = int(log_seq)
-
-    servers = [s.split(':') for s in servers.split(',')]
-    servers = [(ip, int(port)) for ip, port in servers]
-
-    rpc = commitlog.http.Client(sys.argv[1], servers)
-    quorum = int(len(servers)/2) + 1
-
-    res = await rpc.cluster(f'/fetch/log_seq/{seq}/what/header')
-    if quorum > len(res):
-        return
-
-    hdrs = list()
-    for k, v in res.items():
-        # accepted seq, header, server
-        hdrs.append((v.pop('accepted_seq'), v, k))
-
-    hdrs = sorted(hdrs, reverse=True)
-    if not all([hdrs[0][1] == h[1] for h in hdrs[:quorum]]):
-        return
-
-    body = None
-    path = seq2path(seq)
-    if os.path.isfile(path):
-        with open(path, 'rb') as fd:
-            header = fd.readline()
-            hdr = json.loads(header)
-            hdr.pop('accepted_seq')
-            if hdrs[0][1] == hdr:
-                body = fd.read()
-
-    if body:
-        assert (hdr['length'] == len(body))
-        return json.dumps(hdr, sort_keys=True).encode() + b'\n' + body
-
-    url = f'/blob/log_seq/{seq}/what/body'
-    result = await rpc.server(hdrs[0][2], url)
-    if result:
-        header, body = result.split(b'\n', max_split=1)
-        hdr = json.loads(header)
-        assert (hdr['length'] == len(body))
-
-        hdr.pop('accepted_seq')
-        assert (hdrs[0][1] == hdr)
-
-        dump(path, hdr, b'\n', body)
-        return json.dumps(hdr, sort_keys=True).encode() + b'\n' + body
-
-
 class G:
     log_id = None
     logdir = None
@@ -223,7 +152,7 @@ async def main():
         dump(G.promise_filepath, dict(promised_seq=0))
 
     # Cleanup
-    data_dirs = sorted_dir(G.logdir)
+    data_dirs = commitlog.sorted_dir(G.logdir)
     for f in os.listdir(G.logdir):
         path = os.path.join(G.logdir, str(f))
 
@@ -236,8 +165,8 @@ async def main():
         os.remove(path) if os.path.isfile(path) else shutil.rmtree(path)
 
     server = commitlog.http.Server(dict(
-        init=paxos_client, promise=paxos_promise, commit=paxos_accept,
-        fetch=fetch, tail=tail))
+        fetch=fetch, init=paxos_client,
+        promise=paxos_promise, commit=paxos_accept))
 
     await server.run(port, cert)
 
