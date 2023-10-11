@@ -10,16 +10,10 @@ import hashlib
 import asyncio
 import logging
 import commitlog
-import commitlog.http
 
 
 def seq2path(log_seq):
     return commitlog.seq2path(G.logdir, log_seq)
-
-
-def dump(path, *objects):
-    commitlog.dump(G.logdir, path, *objects)
-    os.sync()
 
 
 async def fetch(log_seq, what):
@@ -39,7 +33,8 @@ async def paxos_promise(proposal_seq):
 
     # proposal_seq has to be strictly bigger than whatever seen so far
     if proposal_seq > promised_seq:
-        dump(G.promise_filepath, dict(promised_seq=proposal_seq))
+        commitlog.dump(G.promise_filepath, dict(promised_seq=proposal_seq))
+        os.sync()
 
         max_seq = commitlog.max_seq(G.logdir)
         if max_seq > 0:
@@ -70,13 +65,15 @@ async def paxos_accept(proposal_seq, log_seq, blob):
         # Record new proposal_seq as it is bigger than the current value.
         # Any future writes with a smaller seq would be rejected.
         if proposal_seq > promised_seq:
-            dump(G.promise_filepath, dict(promised_seq=proposal_seq))
+            commitlog.dump(G.promise_filepath, dict(promised_seq=proposal_seq))
 
         hdr = dict(accepted_seq=proposal_seq, log_id=G.log_id, log_seq=log_seq,
                    length=len(blob), sha1=hashlib.sha1(blob).hexdigest())
 
         if blob:
-            dump(seq2path(log_seq), hdr, b'\n', blob)
+            commitlog.dump(seq2path(log_seq), hdr, b'\n', blob)
+            os.sync()
+
             hdr.pop('accepted_seq')
             return hdr
 
@@ -88,7 +85,7 @@ async def paxos_client(servers):
     servers = [s.split(':') for s in servers.split(',')]
     servers = [(ip, int(port)) for ip, port in servers]
 
-    rpc = commitlog.http.Client(sys.argv[1], servers)
+    rpc = commitlog.HTTPClient(sys.argv[1], servers)
     quorum = int(len(servers)/2) + 1
     proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
@@ -138,8 +135,8 @@ async def main():
 
     cert, port = sys.argv[1], int(sys.argv[2])
 
-    ctx = commitlog.http.Certificate.context(cert, ssl.Purpose.CLIENT_AUTH)
-    sub = commitlog.http.Certificate.subject(ctx)
+    ctx = commitlog.Certificate.context(cert, ssl.Purpose.CLIENT_AUTH)
+    sub = commitlog.Certificate.subject(ctx)
 
     # Extract UUID from the subject. This would be the log_id for this stream
     guid = uuid.UUID(re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}', sub)[0])
@@ -149,7 +146,7 @@ async def main():
     G.promise_filepath = os.path.join(G.logdir, 'promised')
 
     if not os.path.isfile(G.promise_filepath):
-        dump(G.promise_filepath, dict(promised_seq=0))
+        commitlog.dump(G.promise_filepath, dict(promised_seq=0))
 
     # Cleanup
     data_dirs = commitlog.sorted_dir(G.logdir)
@@ -164,7 +161,7 @@ async def main():
 
         os.remove(path) if os.path.isfile(path) else shutil.rmtree(path)
 
-    server = commitlog.http.Server(dict(
+    server = commitlog.HTTPServer(dict(
         fetch=fetch, init=paxos_client,
         promise=paxos_promise, commit=paxos_accept))
 

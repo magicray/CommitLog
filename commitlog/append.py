@@ -2,7 +2,7 @@ import sys
 import time
 import asyncio
 import logging
-import commitlog.http
+import commitlog
 from logging import critical as log
 
 
@@ -15,7 +15,7 @@ async def main():
     srvs = [argv.split(':') for argv in servers]
     srvs = [(ip, int(port)) for ip, port in srvs]
 
-    client = commitlog.http.Client(cert, srvs)
+    client = commitlog.HTTPClient(cert, srvs)
     quorum = int(len(srvs)/2) + 1
 
     try:
