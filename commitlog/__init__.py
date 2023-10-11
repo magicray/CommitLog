@@ -201,3 +201,33 @@ class HTTPClient():
                 writer.close()
             except Exception:
                 pass
+
+
+class Client():
+    def __init__(self, cert, servers):
+        self.client = HTTPClient(cert, servers)
+        self.quorum = int(len(servers)/2) + 1
+        self.servers = ','.join([f'{ip}:{port}' for ip, port in servers])
+
+    async def init(self):
+        self.proposal_seq = self.log_seq = None
+
+        url = f'/init/servers/{self.servers}'
+        values = sorted((await self.client.cluster(url)).values())
+
+        if values:
+            self.proposal_seq, self.log_seq = values[-1]
+
+        return self.log_seq
+
+    async def commit(self, blob):
+        proposal_seq, log_seq = self.proposal_seq, self.log_seq + 1
+        self.proposal_seq = self.log_seq = None
+
+        url = f'/commit/proposal_seq/{proposal_seq}/log_seq/{log_seq}'
+        values = list((await self.client.cluster(url, blob)).values())
+
+        if len(values) >= self.quorum:
+            if all([values[0] == v for v in values]):
+                self.proposal_seq, self.log_seq = proposal_seq, log_seq
+                return values[0]
