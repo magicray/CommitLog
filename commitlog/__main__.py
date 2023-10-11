@@ -3,6 +3,7 @@ import re
 import sys
 import ssl
 import json
+import time
 import uuid
 import asyncio
 import logging
@@ -10,12 +11,35 @@ import commitlog
 from logging import critical as log
 
 
-async def main():
-    logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
+async def append():
+    url = f'/init/servers/{servers}'
+    vlist = sorted((await client.cluster(url)).values())
+    if not vlist:
+        log('could not get proposal_seq')
+        exit(1)
 
-    cert = sys.argv[1]
+    proposal_seq, log_seq = vlist[-1]
 
-    ctx = commitlog.Certificate.context(sys.argv[1], ssl.Purpose.CLIENT_AUTH)
+    while True:
+        blob = sys.stdin.buffer.read(1024*1024)
+        if not blob:
+            exit(0)
+
+        ts = time.time()
+        log_seq += 1
+
+        url = f'/commit/proposal_seq/{proposal_seq}/log_seq/{log_seq}'
+        vlist = list((await client.cluster(url, blob)).values())
+        if quorum > len(vlist) or not all([vlist[0] == v for v in vlist]):
+            log('commit failed')
+            exit(1)
+
+        vlist[0]['msec'] = int((time.time() - ts) * 1000)
+        log(vlist[0])
+
+
+async def tail():
+    ctx = commitlog.Certificate.context(cert, ssl.Purpose.CLIENT_AUTH)
 
     logdir = os.path.join('commitlog', str(uuid.UUID(
         re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
@@ -23,11 +47,6 @@ async def main():
 
     os.makedirs(logdir, exist_ok=True)
     seq = commitlog.max_seq(logdir) + 1
-
-    servers = [argv.split(':') for argv in sys.argv[2:]]
-    servers = [(ip, int(port)) for ip, port in servers]
-    client = commitlog.HTTPClient(cert, servers)
-    quorum = int(len(servers)/2) + 1
 
     while True:
         res = await client.cluster(f'/fetch/log_seq/{seq}/what/header')
@@ -68,4 +87,15 @@ async def main():
 
 
 if '__main__' == __name__:
-    asyncio.run(main())
+    logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
+
+    cmd, cert, servers = sys.argv[1], sys.argv[2], sys.argv[3:]
+
+    srvs = [argv.split(':') for argv in servers]
+    srvs = [(ip, int(port)) for ip, port in srvs]
+
+    quorum = int(len(srvs)/2) + 1
+    client = commitlog.HTTPClient(cert, srvs)
+    servers = ','.join(servers)
+
+    asyncio.run(globals()[cmd]())
