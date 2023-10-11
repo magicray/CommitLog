@@ -39,13 +39,6 @@ async def append():
 
 
 async def tail():
-    ctx = commitlog.Certificate.context(cert, ssl.Purpose.CLIENT_AUTH)
-
-    logdir = os.path.join('commitlog', str(uuid.UUID(
-        re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
-                  commitlog.Certificate.subject(ctx))[0])))
-
-    os.makedirs(logdir, exist_ok=True)
     seq = commitlog.max_seq(logdir) + 1
 
     while True:
@@ -91,11 +84,16 @@ if '__main__' == __name__:
 
     cmd, cert, servers = sys.argv[1], sys.argv[2], sys.argv[3:]
 
-    srvs = [argv.split(':') for argv in servers]
-    srvs = [(ip, int(port)) for ip, port in srvs]
+    ctx = commitlog.Certificate.context(cert, ssl.Purpose.CLIENT_AUTH)
+    logdir = os.path.join('commitlog', str(uuid.UUID(
+        re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
+                  commitlog.Certificate.subject(ctx))[0])))
+
+    srvs = [(ip, int(port)) for ip, port in [s.split(':') for s in servers]]
+    servers = ','.join(servers)
 
     quorum = int(len(srvs)/2) + 1
     client = commitlog.HTTPClient(cert, srvs)
-    servers = ','.join(servers)
 
+    os.makedirs(logdir, exist_ok=True)
     asyncio.run(globals()[cmd]())
