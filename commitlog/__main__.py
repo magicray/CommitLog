@@ -13,7 +13,7 @@ from logging import critical as log
 async def append():
     client = commitlog.Client(cert, servers)
 
-    if not await client.init():
+    if await client.init() is None:
         log('init failed')
         exit(1)
 
