@@ -24,7 +24,7 @@ async def append():
 
         ts = time.time()
 
-        result = await client.commit(blob)
+        result = await client.write(blob)
         if not result:
             log('commit failed')
             exit(1)
@@ -37,12 +37,21 @@ async def tail():
     seq = commitlog.max_seq(logdir) + 1
     client = commitlog.Client(cert, servers)
 
-    async for hdr, blob in client.tail(seq):
-        path = commitlog.seq2path(logdir, hdr['log_seq'])
+    while True:
+        result = await client.read(seq)
+        if not result:
+            await asyncio.sleep(1)
+            continue
+
+        hdr, blob = result
+
+        path = commitlog.seq2path(logdir, seq)
         commitlog.dump(path, hdr, b'\n', blob)
 
         with open(path) as fd:
             log(fd.readline().strip())
+
+        seq += 1
 
 
 if '__main__' == __name__:

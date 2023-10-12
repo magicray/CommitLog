@@ -125,6 +125,10 @@ async def paxos_client(servers):
         return [proposal_seq, vlist[0]['log_seq']]
 
 
+async def echo(msg):
+    return dict(msg=msg)
+
+
 class G:
     log_id = None
     logdir = None
@@ -162,7 +166,7 @@ async def main():
         os.remove(path) if os.path.isfile(path) else shutil.rmtree(path)
 
     server = commitlog.HTTPServer(dict(
-        fetch=fetch, init=paxos_client,
+        echo=echo, fetch=fetch, init=paxos_client,
         promise=paxos_promise, commit=paxos_accept))
 
     await server.run(port, cert)

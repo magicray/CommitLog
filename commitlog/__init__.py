@@ -4,6 +4,7 @@ import json
 import uuid
 import asyncio
 import traceback
+import urllib.parse
 from logging import critical as log
 
 
@@ -78,7 +79,8 @@ class HTTPServer():
                     p = line.decode().split()[1].strip('/').split('/')
 
                     method = p[0]
-                    params = {k.lower(): v for k, v in zip(p[1::2], p[2::2])}
+                    params = {k.lower(): urllib.parse.unquote(v)
+                              for k, v in zip(p[1::2], p[2::2])}
 
                     length = 0
                     while True:
@@ -93,18 +95,16 @@ class HTTPServer():
                     if length > 0:
                         params['blob'] = await reader.readexactly(length)
                 except Exception:
-                    log(f'{peer} {count} disconnected or invalid header')
                     return writer.close()
 
                 if method not in self.methods:
-                    log(f'{peer} {count} invalid method {method}')
                     return writer.close()
 
                 try:
                     res = await self.methods[method](**params)
                 except Exception as e:
                     traceback.print_exc()
-                    res = str(e)
+                    res = str(e).encode()
                     writer.write(b'HTTP/1.1 400 Bad Request\n')
                     writer.write(f'content-length: {len(res)}\n\n'.encode())
                     writer.write(res)
@@ -127,7 +127,6 @@ class HTTPServer():
                         writer.write(b'\n')
                     await writer.drain()
                 except Exception:
-                    log(f'{peer} disconnected or invalid header')
                     return writer.close()
 
                 params.pop('blob', None)
@@ -188,8 +187,7 @@ class HTTPClient():
                 if 'application/json' == mime_type:
                     return json.loads(octets)
                 return octets
-        except Exception as e:
-            log(e)
+        except Exception:
             if self.conns[server][1] is not None:
                 self.conns[server][1].close()
 
@@ -229,7 +227,7 @@ class Client():
 
         return self.log_seq
 
-    async def commit(self, blob):
+    async def write(self, blob):
         proposal_seq, log_seq = self.proposal_seq, self.log_seq + 1
         self.proposal_seq = self.log_seq = None
 
@@ -241,36 +239,31 @@ class Client():
                 self.proposal_seq, self.log_seq = proposal_seq, log_seq
                 return values[0]
 
-    async def tail(self, seq, step=1):
-        while True:
-            url = f'/fetch/log_seq/{seq}/what/header'
-            res = await self.client.cluster(url)
-            if self.quorum > len(res):
-                await asyncio.sleep(10)
-                continue
+    async def read(self, seq):
+        url = f'/fetch/log_seq/{seq}/what/header'
+        res = await self.client.cluster(url)
+        if self.quorum > len(res):
+            return
 
-            hdrs = list()
-            for k, v in res.items():
-                # accepted seq, header, server
-                hdrs.append((v.pop('accepted_seq'), v, k))
+        hdrs = list()
+        for k, v in res.items():
+            # accepted seq, header, server
+            hdrs.append((v.pop('accepted_seq'), v, k))
 
-            hdrs = sorted(hdrs, reverse=True)
-            if not all([hdrs[0][1] == h[1] for h in hdrs[:self.quorum]]):
-                await asyncio.sleep(1)
-                continue
+        hdrs = sorted(hdrs, reverse=True)
+        if not all([hdrs[0][1] == h[1] for h in hdrs[:self.quorum]]):
+            return
 
-            url = f'/fetch/log_seq/{seq}/what/body'
-            result = await self.client.server(hdrs[0][2], url)
-            if not result:
-                await asyncio.sleep(1)
-                continue
+        url = f'/fetch/log_seq/{seq}/what/body'
+        result = await self.client.server(hdrs[0][2], url)
+        if not result:
+            return
 
-            header, blob = result.split(b'\n', maxsplit=1)
-            hdr = json.loads(header)
+        header, blob = result.split(b'\n', maxsplit=1)
+        hdr = json.loads(header)
 
-            hdr.pop('accepted_seq')
-            assert (hdr['length'] == len(blob))
-            assert (hdrs[0][1] == hdr)
+        hdr.pop('accepted_seq')
+        assert (hdr['length'] == len(blob))
+        assert (hdrs[0][1] == hdr)
 
-            yield hdr, blob
-            seq += step
+        return hdr, blob
