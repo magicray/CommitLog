@@ -2,7 +2,6 @@ import os
 import re
 import sys
 import ssl
-import json
 import time
 import uuid
 import asyncio
@@ -35,47 +34,15 @@ async def append():
 
 
 async def tail():
-    quorum = int(len(servers)/2) + 1
-    client = commitlog.HTTPClient(cert, servers)
-
     seq = commitlog.max_seq(logdir) + 1
+    client = commitlog.Client(cert, servers)
 
-    while True:
-        res = await client.cluster(f'/fetch/log_seq/{seq}/what/header')
-        if quorum > len(res):
-            await asyncio.sleep(10)
-            continue
-
-        hdrs = list()
-        for k, v in res.items():
-            # accepted seq, header, server
-            hdrs.append((v.pop('accepted_seq'), v, k))
-
-        hdrs = sorted(hdrs, reverse=True)
-        if not all([hdrs[0][1] == h[1] for h in hdrs[:quorum]]):
-            await asyncio.sleep(1)
-            continue
-
-        url = f'/fetch/log_seq/{seq}/what/body'
-        result = await client.server(hdrs[0][2], url)
-        if not result:
-            await asyncio.sleep(1)
-            continue
-
-        header, body = result.split(b'\n', maxsplit=1)
-        hdr = json.loads(header)
-
-        hdr.pop('accepted_seq')
-        assert (hdr['length'] == len(body))
-        assert (hdrs[0][1] == hdr)
-
-        path = commitlog.seq2path(logdir, seq)
-        commitlog.dump(path, hdr, b'\n', body)
+    async for hdr, blob in client.tail(seq):
+        path = commitlog.seq2path(logdir, hdr['log_seq'])
+        commitlog.dump(path, hdr, b'\n', blob)
 
         with open(path) as fd:
             log(fd.readline().strip())
-
-        seq += 1
 
 
 if '__main__' == __name__:

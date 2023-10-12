@@ -100,7 +100,16 @@ class HTTPServer():
                     log(f'{peer} {count} invalid method {method}')
                     return writer.close()
 
-                res = await self.methods[method](**params)
+                try:
+                    res = await self.methods[method](**params)
+                except Exception as e:
+                    traceback.print_exc()
+                    res = str(e)
+                    writer.write(b'HTTP/1.1 400 Bad Request\n')
+                    writer.write(f'content-length: {len(res)}\n\n'.encode())
+                    writer.write(res)
+                    await writer.drain()
+
                 res = res if res else b''
                 status = '200 OK' if res else '400 Bad Request'
                 mime_type = 'application/octet-stream'
@@ -231,3 +240,37 @@ class Client():
             if all([values[0] == v for v in values]):
                 self.proposal_seq, self.log_seq = proposal_seq, log_seq
                 return values[0]
+
+    async def tail(self, seq, step=1):
+        while True:
+            url = f'/fetch/log_seq/{seq}/what/header'
+            res = await self.client.cluster(url)
+            if self.quorum > len(res):
+                await asyncio.sleep(10)
+                continue
+
+            hdrs = list()
+            for k, v in res.items():
+                # accepted seq, header, server
+                hdrs.append((v.pop('accepted_seq'), v, k))
+
+            hdrs = sorted(hdrs, reverse=True)
+            if not all([hdrs[0][1] == h[1] for h in hdrs[:self.quorum]]):
+                await asyncio.sleep(1)
+                continue
+
+            url = f'/fetch/log_seq/{seq}/what/body'
+            result = await self.client.server(hdrs[0][2], url)
+            if not result:
+                await asyncio.sleep(1)
+                continue
+
+            header, blob = result.split(b'\n', maxsplit=1)
+            hdr = json.loads(header)
+
+            hdr.pop('accepted_seq')
+            assert (hdr['length'] == len(blob))
+            assert (hdrs[0][1] == hdr)
+
+            yield hdr, blob
+            seq += step
