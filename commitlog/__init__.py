@@ -168,8 +168,7 @@ class HTTPClient():
             writer.write(blob)
             await writer.drain()
 
-            # Ignore the return status as we don't use it
-            line = await reader.readline()
+            status = await reader.readline()
 
             length = 0
             while True:
@@ -183,8 +182,9 @@ class HTTPClient():
                 if 'content-type' == k.strip().lower():
                     mime_type = v.strip()
 
-            if length > 0:
+            if status.startswith(b'HTTP/1.1 200 OK') and length > 0:
                 octets = await reader.readexactly(length)
+                assert (length == len(octets))
                 if 'application/json' == mime_type:
                     return json.loads(octets)
                 return octets
