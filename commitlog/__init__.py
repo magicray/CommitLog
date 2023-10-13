@@ -190,8 +190,9 @@ class HTTPClient():
         except Exception:
             if self.conns[server][1] is not None:
                 self.conns[server][1].close()
+                self.conns[server] = None, None
 
-            self.conns[server] = None, None
+            raise
 
     async def cluster(self, resource, blob=b''):
         servers = self.conns.keys()
@@ -200,7 +201,11 @@ class HTTPClient():
             *[self.server(s, resource, blob) for s in servers],
             return_exceptions=True)
 
-        return {s: r for s, r in zip(servers, res) if r is not None}
+        result = dict()
+        for s, r in zip(servers, res):
+            if type(r) in (bytes, str, int, float, bool, list, dict):
+                result[s] = r
+        return result
 
     def __del__(self):
         for server, (reader, writer) in self.conns.items():
