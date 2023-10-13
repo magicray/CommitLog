@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 import ssl
 import json
@@ -139,13 +138,7 @@ async def main():
 
     cert, port = sys.argv[1], int(sys.argv[2])
 
-    ctx = commitlog.Certificate.context(cert, ssl.Purpose.CLIENT_AUTH)
-    sub = commitlog.Certificate.subject(ctx)
-
-    # Extract UUID from the subject. This would be the log_id for this stream
-    guid = uuid.UUID(re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}', sub)[0])
-
-    G.log_id = str(guid)
+    G.log_id = str(commitlog.cert_uuid(cert))
     G.logdir = os.path.join('commitlog', G.log_id)
     G.promise_filepath = os.path.join(G.logdir, 'promised')
 

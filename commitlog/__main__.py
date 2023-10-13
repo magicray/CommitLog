@@ -60,10 +60,7 @@ if '__main__' == __name__:
     cmd, cert, servers = sys.argv[1], sys.argv[2], sys.argv[3:]
     servers = [(ip, int(port)) for ip, port in [s.split(':') for s in servers]]
 
-    ctx = commitlog.Certificate.context(cert, ssl.Purpose.CLIENT_AUTH)
-    logdir = os.path.join('commitlog', str(uuid.UUID(
-        re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
-                  commitlog.Certificate.subject(ctx))[0])))
-
+    logdir = os.path.join('commitlog', commitlog.cert_uuid(cert))
     os.makedirs(logdir, exist_ok=True)
+
     asyncio.run(globals()[cmd]())

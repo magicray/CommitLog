@@ -1,4 +1,5 @@
 import os
+import re
 import ssl
 import json
 import uuid
@@ -46,20 +47,20 @@ def dump(path, *objects):
     os.replace(tmp, path)
 
 
-class Certificate:
-    @staticmethod
-    def context(path, purpose):
-        ctx = ssl.create_default_context(cafile=path, purpose=purpose)
+def cert_context(path, purpose):
+    ctx = ssl.create_default_context(cafile=path, purpose=purpose)
 
-        ctx.load_cert_chain(path, path)
-        ctx.verify_mode = ssl.CERT_REQUIRED
-        ctx.check_hostname = False
+    ctx.load_cert_chain(path, path)
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.check_hostname = False
 
-        return ctx
+    return ctx
 
-    @staticmethod
-    def subject(ctx):
-        return ctx.get_ca_certs()[0]['subject'][0][0][1]
+
+def cert_uuid(cert):
+    ctx = cert_context(cert, ssl.Purpose.CLIENT_AUTH)
+    return str(uuid.UUID(re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
+                         ctx.get_ca_certs()[0]['subject'][0][0][1])[0]))
 
 
 class HTTPServer():
@@ -138,7 +139,7 @@ class HTTPServer():
                 os._exit(0)
 
     async def run(self, port, cert):
-        ctx = Certificate.context(cert, ssl.Purpose.CLIENT_AUTH)
+        ctx = cert_context(cert, ssl.Purpose.CLIENT_AUTH)
         srv = await asyncio.start_server(self.handler, None, port, ssl=ctx)
 
         async with srv:
@@ -147,7 +148,7 @@ class HTTPServer():
 
 class HTTPClient():
     def __init__(self, cert, servers):
-        self.SSL = Certificate.context(cert, ssl.Purpose.SERVER_AUTH)
+        self.SSL = cert_context(cert, ssl.Purpose.SERVER_AUTH)
         self.conns = {tuple(srv): (None, None) for srv in servers}
 
     async def server(self, server, resource, blob=b''):
@@ -252,8 +253,9 @@ class Client():
 
         hdrs = list()
         for k, v in res.items():
-            # accepted seq, header, server
-            hdrs.append((v.pop('accepted_seq'), v, k))
+            hdrs.append((v.pop('accepted_seq'),          # accepted seq
+                         json.dumps(v, sort_keys=True),  # header
+                         k))                             # server
 
         hdrs = sorted(hdrs, reverse=True)
         if not all([hdrs[0][1] == h[1] for h in hdrs[:self.quorum]]):
@@ -272,6 +274,6 @@ class Client():
 
         hdr.pop('accepted_seq')
         assert (hdr['length'] == len(blob))
-        assert (hdrs[0][1] == hdr)
+        assert (hdrs[0][1] == json.dumps(hdr, sort_keys=True))
 
         return hdr, blob
