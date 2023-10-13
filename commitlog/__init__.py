@@ -259,9 +259,12 @@ class Client():
         if not all([hdrs[0][1] == h[1] for h in hdrs[:self.quorum]]):
             return
 
-        url = f'/fetch/log_seq/{seq}/what/body'
-        result = await self.client.server(hdrs[0][2], url)
-        if not result:
+        try:
+            url = f'/fetch/log_seq/{seq}/what/body'
+            result = await self.client.server(hdrs[0][2], url)
+            if not result:
+                return
+        except Exception:
             return
 
         header, blob = result.split(b'\n', maxsplit=1)
