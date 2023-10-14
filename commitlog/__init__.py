@@ -94,7 +94,7 @@ class HTTPServer():
                             length = int(v.strip())
 
                     if length > 0:
-                        params['blob'] = await reader.readexactly(length)
+                        params['octets'] = await reader.readexactly(length)
                 except Exception:
                     return writer.close()
 
@@ -130,7 +130,7 @@ class HTTPServer():
                 except Exception:
                     return writer.close()
 
-                params.pop('blob', None)
+                params.pop('octets', None)
                 log(f'{peer} {count} {method} {params} {length} {len(res)}')
                 count += 1
             except Exception as e:
@@ -148,10 +148,13 @@ class HTTPServer():
 
 class HTTPClient():
     def __init__(self, cert, servers):
-        self.SSL = cert_context(cert, ssl.Purpose.SERVER_AUTH)
-        self.conns = {tuple(srv): (None, None) for srv in servers}
+        servers = [s.split(':') for s in servers.split(',')]
 
-    async def server(self, server, resource, blob=b''):
+        self.SSL = cert_context(cert, ssl.Purpose.SERVER_AUTH)
+        self.conns = {(ip, int(port)): (None, None) for ip, port in servers}
+        self.quorum = int(len(self.conns)/2) + 1
+
+    async def server(self, server, resource, octets=b''):
         try:
             if self.conns[server][0] is None or self.conns[server][1] is None:
                 self.conns[server] = await asyncio.open_connection(
@@ -159,13 +162,13 @@ class HTTPClient():
 
             reader, writer = self.conns[server]
 
-            blob = blob if blob else b''
-            if type(blob) is not bytes:
-                blob = json.dumps(blob).encode()
+            octets = octets if octets else b''
+            if type(octets) is not bytes:
+                octets = json.dumps(octets).encode()
 
             writer.write(f'POST {resource} HTTP/1.1\n'.encode())
-            writer.write(f'content-length: {len(blob)}\n\n'.encode())
-            writer.write(blob)
+            writer.write(f'content-length: {len(octets)}\n\n'.encode())
+            writer.write(octets)
             await writer.drain()
 
             status = await reader.readline()
@@ -195,11 +198,11 @@ class HTTPClient():
 
             raise
 
-    async def cluster(self, resource, blob=b''):
+    async def cluster(self, resource, octets=b''):
         servers = self.conns.keys()
 
         res = await asyncio.gather(
-            *[self.server(s, resource, blob) for s in servers],
+            *[self.server(s, resource, octets) for s in servers],
             return_exceptions=True)
 
         result = dict()
@@ -219,8 +222,8 @@ class HTTPClient():
 class Client():
     def __init__(self, cert, servers):
         self.client = HTTPClient(cert, servers)
-        self.quorum = int(len(servers)/2) + 1
-        self.servers = ','.join([f'{ip}:{port}' for ip, port in servers])
+        self.quorum = self.client.quorum
+        self.servers = servers
 
     async def init(self):
         self.proposal_seq = self.log_seq = None
@@ -233,16 +236,18 @@ class Client():
 
         return self.log_seq
 
-    async def write(self, blob):
+    async def write(self, octets):
         proposal_seq, log_seq = self.proposal_seq, self.log_seq + 1
         self.proposal_seq = self.log_seq = None
 
-        url = f'/commit/proposal_seq/{proposal_seq}/log_seq/{log_seq}'
-        values = list((await self.client.cluster(url, blob)).values())
+        url = f'/commit/proposal_seq/{proposal_seq}'
+        url += f'/log_seq/{log_seq}/commit_id/{uuid.uuid4()}'
+        values = list((await self.client.cluster(url, octets)).values())
 
         if len(values) >= self.quorum:
             if all([values[0] == v for v in values]):
                 self.proposal_seq, self.log_seq = proposal_seq, log_seq
+
                 return values[0]
 
     async def read(self, seq):
@@ -269,11 +274,11 @@ class Client():
         except Exception:
             return
 
-        header, blob = result.split(b'\n', maxsplit=1)
+        header, octets = result.split(b'\n', maxsplit=1)
         hdr = json.loads(header)
-
         hdr.pop('accepted_seq')
-        assert (hdr['length'] == len(blob))
+
+        assert (hdr['length'] == len(octets))
         assert (hdrs[0][1] == json.dumps(hdr, sort_keys=True))
 
-        return hdr, blob
+        return hdr, octets

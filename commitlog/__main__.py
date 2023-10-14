@@ -1,30 +1,28 @@
 import os
-import re
 import sys
-import ssl
 import time
-import uuid
 import asyncio
 import logging
+import argparse
 import commitlog
 from logging import critical as log
 
 
 async def append():
-    client = commitlog.Client(cert, servers)
+    client = commitlog.Client(G.cert, G.servers)
 
     if await client.init() is None:
         log('init failed')
         exit(1)
 
     while True:
-        blob = sys.stdin.buffer.read(1024*1024)
-        if not blob:
+        octets = sys.stdin.buffer.read(1024*1024)
+        if not octets:
             exit(0)
 
         ts = time.time()
 
-        result = await client.write(blob)
+        result = await client.write(octets)
         if not result:
             log('commit failed')
             exit(1)
@@ -35,7 +33,7 @@ async def append():
 
 async def tail():
     seq = commitlog.max_seq(logdir) + 1
-    client = commitlog.Client(cert, servers)
+    client = commitlog.Client(G.cert, G.servers)
 
     while True:
         result = await client.read(seq)
@@ -43,10 +41,10 @@ async def tail():
             await asyncio.sleep(1)
             continue
 
-        hdr, blob = result
+        hdr, octets = result
 
         path = commitlog.seq2path(logdir, seq)
-        commitlog.dump(path, hdr, b'\n', blob)
+        commitlog.dump(path, hdr, b'\n', octets)
 
         with open(path) as fd:
             log(fd.readline().strip())
@@ -57,10 +55,13 @@ async def tail():
 if '__main__' == __name__:
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
-    cmd, cert, servers = sys.argv[1], sys.argv[2], sys.argv[3:]
-    servers = [(ip, int(port)) for ip, port in [s.split(':') for s in servers]]
+    G = argparse.ArgumentParser()
+    G.add_argument('--cmd', help='command - tail/append')
+    G.add_argument('--cert', help='Self signed certificate file path')
+    G.add_argument('--servers', help='comma separated list of server ip:port')
+    G = G.parse_args()
 
-    logdir = os.path.join('commitlog', commitlog.cert_uuid(cert))
+    logdir = os.path.join('commitlog', commitlog.cert_uuid(G.cert))
     os.makedirs(logdir, exist_ok=True)
 
-    asyncio.run(globals()[cmd]())
+    asyncio.run(globals()[G.cmd]())

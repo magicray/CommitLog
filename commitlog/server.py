@@ -1,6 +1,4 @@
 import os
-import sys
-import ssl
 import json
 import uuid
 import time
@@ -8,6 +6,7 @@ import shutil
 import hashlib
 import asyncio
 import logging
+import argparse
 import commitlog
 
 
@@ -46,7 +45,7 @@ async def paxos_promise(proposal_seq):
 
 # ACCEPT - Client has sent the most recent value from the promise phase.
 # Stale leaders blocked. Only the most recent can reach this stage.
-async def paxos_accept(proposal_seq, log_seq, blob):
+async def paxos_accept(proposal_seq, log_seq, commit_id, octets):
     log_seq = int(log_seq)
     proposal_seq = int(proposal_seq)
 
@@ -67,13 +66,13 @@ async def paxos_accept(proposal_seq, log_seq, blob):
             commitlog.dump(G.promise_filepath, dict(promised_seq=proposal_seq))
 
         hdr = dict(accepted_seq=proposal_seq, log_id=G.log_id, log_seq=log_seq,
-                   length=len(blob), sha1=hashlib.sha1(blob).hexdigest())
+                   commit_id=commit_id, length=len(octets),
+                   sha1=hashlib.sha1(octets).hexdigest())
 
-        if blob:
-            commitlog.dump(seq2path(log_seq), hdr, b'\n', blob)
+        if octets:
+            commitlog.dump(seq2path(log_seq), hdr, b'\n', octets)
             os.sync()
 
-            hdr.pop('accepted_seq')
             return hdr
 
 
@@ -81,11 +80,8 @@ async def paxos_accept(proposal_seq, log_seq, blob):
 # However, since leader election is done infrequently, its more maintainable to
 # keep this code here and call it over RPC. This makes client very lightweight.
 async def paxos_client(servers):
-    servers = [s.split(':') for s in servers.split(',')]
-    servers = [(ip, int(port)) for ip, port in servers]
-
-    rpc = commitlog.HTTPClient(sys.argv[1], servers)
-    quorum = int(len(servers)/2) + 1
+    rpc = commitlog.HTTPClient(G.cert, servers)
+    quorum = rpc.quorum
     proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
     # Paxos PROMISE phase - block stale leaders from writing
@@ -101,6 +97,7 @@ async def paxos_client(servers):
     # CRUX of the paxos protocol - Find the most recent log_seq with most
     # recent accepted_seq. Only this value should be proposed
     log_seq = accepted_seq = 0
+    commit_id = str(uuid.uuid4())
     for val in res.values():
         header, body = val.split(b'\n', maxsplit=1)
         header = json.loads(header)
@@ -109,16 +106,18 @@ async def paxos_client(servers):
         new = header['log_seq'], header['accepted_seq']
 
         if new > old:
-            blob = body
+            octets = body
             log_seq = header['log_seq']
+            commit_id = header['commit_id']
             accepted_seq = header['accepted_seq']
 
-    if 0 == log_seq or not blob:
+    if 0 == log_seq or not octets:
         return
 
     # Paxos ACCEPT phase - re-write the last blob to bring all nodes in sync
-    url = f'/commit/proposal_seq/{proposal_seq}/log_seq/{log_seq}'
-    vlist = list((await rpc.cluster(url, blob)).values())
+    url = f'/commit/proposal_seq/{proposal_seq}'
+    url += f'/log_seq/{log_seq}/commit_id/{commit_id}'
+    vlist = list((await rpc.cluster(url, octets)).values())
 
     if len(vlist) >= quorum and all([vlist[0] == v for v in vlist]):
         return [proposal_seq, vlist[0]['log_seq']]
@@ -128,17 +127,10 @@ async def echo(msg):
     return dict(msg=msg)
 
 
-class G:
-    log_id = None
-    logdir = None
-
-
 async def main():
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
-    cert, port = sys.argv[1], int(sys.argv[2])
-
-    G.log_id = str(commitlog.cert_uuid(cert))
+    G.log_id = str(commitlog.cert_uuid(G.cert))
     G.logdir = os.path.join('commitlog', G.log_id)
     G.promise_filepath = os.path.join(G.logdir, 'promised')
 
@@ -162,8 +154,13 @@ async def main():
         echo=echo, fetch=fetch, init=paxos_client,
         promise=paxos_promise, commit=paxos_accept))
 
-    await server.run(port, cert)
+    await server.run(G.port, G.cert)
 
 
 if '__main__' == __name__:
+    G = argparse.ArgumentParser()
+    G.add_argument('--cert', help='Self signed certificate file path')
+    G.add_argument('--port', type=int, help='port number')
+    G = G.parse_args()
+
     asyncio.run(main())
