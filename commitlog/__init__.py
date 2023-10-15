@@ -155,6 +155,8 @@ class HTTPClient():
         self.quorum = int(len(self.conns)/2) + 1
 
     async def server(self, server, resource, octets=b''):
+        status = None
+
         try:
             if self.conns[server][0] is None or self.conns[server][1] is None:
                 self.conns[server] = await asyncio.open_connection(
@@ -192,11 +194,12 @@ class HTTPClient():
                     return json.loads(octets)
                 return octets
         except Exception:
+            if status:
+                traceback.print_exc()
+
             if self.conns[server][1] is not None:
                 self.conns[server][1].close()
                 self.conns[server] = None, None
-
-            raise
 
     async def cluster(self, resource, octets=b''):
         servers = self.conns.keys()
@@ -205,11 +208,7 @@ class HTTPClient():
             *[self.server(s, resource, octets) for s in servers],
             return_exceptions=True)
 
-        result = dict()
-        for s, r in zip(servers, res):
-            if type(r) in (bytes, str, int, float, bool, list, dict):
-                result[s] = r
-        return result
+        return {s: r for s, r in zip(servers, res) if r}
 
     def __del__(self):
         for server, (reader, writer) in self.conns.items():
