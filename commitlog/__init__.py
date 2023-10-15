@@ -73,70 +73,62 @@ class HTTPServer():
 
         while True:
             try:
-                try:
-                    peer = writer.get_extra_info('socket').getpeername()
+                peer = writer.get_extra_info('socket').getpeername()
 
+                line = await reader.readline()
+                p = line.decode().split()[1].strip('/').split('/')
+
+                method = p[0]
+                params = {k.lower(): urllib.parse.unquote(v)
+                          for k, v in zip(p[1::2], p[2::2])}
+
+                length = 0
+                while True:
                     line = await reader.readline()
-                    p = line.decode().split()[1].strip('/').split('/')
+                    line = line.strip()
+                    if not line:
+                        break
+                    k, v = line.decode().split(':', maxsplit=1)
+                    if 'content-length' == k.strip().lower():
+                        length = int(v.strip())
 
-                    method = p[0]
-                    params = {k.lower(): urllib.parse.unquote(v)
-                              for k, v in zip(p[1::2], p[2::2])}
+                if length > 0:
+                    params['octets'] = await reader.readexactly(length)
+            except Exception:
+                return writer.close()
 
-                    length = 0
-                    while True:
-                        line = await reader.readline()
-                        line = line.strip()
-                        if not line:
-                            break
-                        k, v = line.decode().split(':', maxsplit=1)
-                        if 'content-length' == k.strip().lower():
-                            length = int(v.strip())
+            status = '400 Bad Request'
+            mime_type = 'application/octet-stream'
 
-                    if length > 0:
-                        params['octets'] = await reader.readexactly(length)
-                except Exception:
-                    return writer.close()
+            try:
+                res = await self.methods[method](**params)
+                if res is None:
+                    res = b''
+                else:
+                    status = '200 OK'
 
-                if method not in self.methods:
-                    return writer.close()
-
-                try:
-                    res = await self.methods[method](**params)
-                except Exception as e:
-                    traceback.print_exc()
-                    res = str(e).encode()
-                    writer.write(b'HTTP/1.1 400 Bad Request\n')
-                    writer.write(f'content-length: {len(res)}\n\n'.encode())
-                    writer.write(res)
-                    await writer.drain()
-
-                res = res if res else b''
-                status = '200 OK' if res else '400 Bad Request'
-                mime_type = 'application/octet-stream'
                 if type(res) is not bytes:
                     res = json.dumps(res, indent=4, sort_keys=True).encode()
                     mime_type = 'application/json'
-
-                try:
-                    writer.write(f'HTTP/1.1 {status}\n'.encode())
-                    writer.write(f'content-length: {len(res)}\n'.encode())
-                    if res:
-                        writer.write(f'content-type: {mime_type}\n\n'.encode())
-                        writer.write(res)
-                    else:
-                        writer.write(b'\n')
-                    await writer.drain()
-                except Exception:
-                    return writer.close()
-
-                params.pop('octets', None)
-                log(f'{peer} {count} {method} {params} {length} {len(res)}')
-                count += 1
-            except Exception as e:
+            except Exception:
                 traceback.print_exc()
-                log(f'{peer} {count} FATAL({e})')
-                os._exit(0)
+                res = traceback.format_exc().encode()
+
+            try:
+                writer.write(f'HTTP/1.1 {status}\n'.encode())
+                writer.write(f'content-length: {len(res)}\n'.encode())
+                if res:
+                    writer.write(f'content-type: {mime_type}\n\n'.encode())
+                    writer.write(res)
+                else:
+                    writer.write(b'\n')
+                await writer.drain()
+            except Exception:
+                return writer.close()
+
+            params.pop('octets', None)
+            log(f'{peer} {count} {method} {params} {length} {len(res)}')
+            count += 1
 
     async def run(self, port, cert):
         ctx = cert_context(cert, ssl.Purpose.CLIENT_AUTH)
@@ -205,8 +197,7 @@ class HTTPClient():
         servers = self.conns.keys()
 
         res = await asyncio.gather(
-            *[self.server(s, resource, octets) for s in servers],
-            return_exceptions=True)
+            *[self.server(s, resource, octets) for s in servers])
 
         return {s: r for s, r in zip(servers, res) if r}
 
