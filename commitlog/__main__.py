@@ -263,7 +263,7 @@ async def tail():
 
         hdr, octets = result
 
-        path = seq2path(G.logdir, seq)
+        path = seq2path(seq)
         dump(path, hdr, b'\n', octets)
 
         with open(path) as fd:
