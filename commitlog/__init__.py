@@ -1,4 +1,3 @@
-import os
 import re
 import ssl
 import json
@@ -6,46 +5,6 @@ import uuid
 import time
 import asyncio
 import traceback
-import urllib.parse
-from logging import critical as log
-
-
-def path_join(*path):
-    return os.path.join(*[str(p) for p in path])
-
-
-def seq2path(logdir, log_seq):
-    return path_join(logdir, log_seq//100000, log_seq//1000, log_seq)
-
-
-def sorted_dir(dirname):
-    files = [int(f) for f in os.listdir(dirname) if f.isdigit()]
-    return sorted(files, reverse=True)
-
-
-def max_seq(logdir):
-    # Traverse the three level directory hierarchy,
-    # picking the highest numbered dir/file at each level
-    for x in sorted_dir(logdir):
-        for y in sorted_dir(path_join(logdir, x)):
-            for f in sorted_dir(path_join(logdir, x, y)):
-                return f
-
-    return 0
-
-
-def dump(path, *objects):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-    tmp = path + '.' + str(uuid.uuid4()) + '.tmp'
-    with open(tmp, 'wb') as fd:
-        for obj in objects:
-            if type(obj) is not bytes:
-                obj = json.dumps(obj, sort_keys=True).encode()
-
-            fd.write(obj)
-
-    os.replace(tmp, path)
 
 
 def cert_context(path, purpose):
@@ -62,81 +21,6 @@ def cert_uuid(cert):
     ctx = cert_context(cert, ssl.Purpose.CLIENT_AUTH)
     return str(uuid.UUID(re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
                          ctx.get_ca_certs()[0]['subject'][0][0][1])[0]))
-
-
-class HTTPServer():
-    def __init__(self, methods):
-        self.methods = methods
-
-    async def handler(self, reader, writer):
-        peer = None
-        count = 1
-
-        while True:
-            try:
-                peer = writer.get_extra_info('socket').getpeername()
-
-                line = await reader.readline()
-                p = line.decode().split()[1].strip('/').split('/')
-
-                method = p[0]
-                params = {k.lower(): urllib.parse.unquote(v)
-                          for k, v in zip(p[1::2], p[2::2])}
-
-                length = 0
-                while True:
-                    line = await reader.readline()
-                    line = line.strip()
-                    if not line:
-                        break
-                    k, v = line.decode().split(':', maxsplit=1)
-                    if 'content-length' == k.strip().lower():
-                        length = int(v.strip())
-
-                if length > 0:
-                    params['octets'] = await reader.readexactly(length)
-            except Exception:
-                return writer.close()
-
-            status = '400 Bad Request'
-            mime_type = 'application/octet-stream'
-
-            try:
-                res = await self.methods[method](**params)
-                if res is None:
-                    res = b''
-                else:
-                    status = '200 OK'
-
-                if type(res) is not bytes:
-                    res = json.dumps(res, indent=4, sort_keys=True).encode()
-                    mime_type = 'application/json'
-            except Exception:
-                traceback.print_exc()
-                res = traceback.format_exc().encode()
-
-            try:
-                writer.write(f'HTTP/1.1 {status}\n'.encode())
-                writer.write(f'content-length: {len(res)}\n'.encode())
-                if res:
-                    writer.write(f'content-type: {mime_type}\n\n'.encode())
-                    writer.write(res)
-                else:
-                    writer.write(b'\n')
-                await writer.drain()
-            except Exception:
-                return writer.close()
-
-            params.pop('octets', None)
-            log(f'{peer} {count} {method} {params} {length} {len(res)}')
-            count += 1
-
-    async def run(self, port, cert):
-        ctx = cert_context(cert, ssl.Purpose.CLIENT_AUTH)
-        srv = await asyncio.start_server(self.handler, None, port, ssl=ctx)
-
-        async with srv:
-            return await srv.serve_forever()
 
 
 class HTTPClient():
