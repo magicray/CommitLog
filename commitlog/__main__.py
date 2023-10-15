@@ -120,8 +120,8 @@ async def init():
     return dict(log_seq=await G.client.init())
 
 
-async def write(seq, octets):
-    return await G.client.write(seq)
+async def write(octets):
+    return await G.client.write(octets)
 
 
 async def read(seq):
