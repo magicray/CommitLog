@@ -1,4 +1,3 @@
-import re
 import ssl
 import json
 import uuid
@@ -7,9 +6,8 @@ import asyncio
 import traceback
 
 
-def cert_context(path, purpose):
+def load_cert(path, purpose):
     ctx = ssl.create_default_context(cafile=path, purpose=purpose)
-
     ctx.load_cert_chain(path, path)
     ctx.verify_mode = ssl.CERT_REQUIRED
     ctx.check_hostname = False
@@ -17,17 +15,11 @@ def cert_context(path, purpose):
     return ctx
 
 
-def cert_uuid(cert):
-    ctx = cert_context(cert, ssl.Purpose.CLIENT_AUTH)
-    return str(uuid.UUID(re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
-                         ctx.get_ca_certs()[0]['subject'][0][0][1])[0]))
-
-
 class HTTPClient():
     def __init__(self, cert, servers):
         servers = [s.split(':') for s in servers.split(',')]
 
-        self.SSL = cert_context(cert, ssl.Purpose.SERVER_AUTH)
+        self.SSL = load_cert(cert, ssl.Purpose.SERVER_AUTH)
         self.conns = {(ip, int(port)): (None, None) for ip, port in servers}
         self.quorum = int(len(self.conns)/2) + 1
 

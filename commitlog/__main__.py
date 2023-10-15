@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import ssl
 import time
@@ -119,6 +120,10 @@ async def init():
     return dict(log_seq=await G.client.init())
 
 
+async def write(seq, octets):
+    return await G.client.write(seq)
+
+
 async def read(seq):
     hdr, octets = await G.client.read(seq)
     return json.dumps(hdr, sort_keys=True).encode() + b'\n' + octets
@@ -216,10 +221,10 @@ async def server():
         os.remove(path) if os.path.isfile(path) else shutil.rmtree(path)
 
     handler = HTTPHandler(dict(
-        echo=echo, fetch=fetch, init=init, read=read,
+        echo=echo, fetch=fetch, init=init, read=read, write=write,
         promise=paxos_promise, commit=paxos_accept))
 
-    ctx = commitlog.cert_context(G.cert, ssl.Purpose.CLIENT_AUTH)
+    ctx = commitlog.load_cert(G.cert, ssl.Purpose.CLIENT_AUTH)
     srv = await asyncio.start_server(handler, None, G.port, ssl=ctx)
 
     async with srv:
@@ -277,7 +282,9 @@ if '__main__' == __name__:
     G.add_argument('--servers', help='comma separated list of server ip:port')
     G = G.parse_args()
 
-    G.log_id = str(commitlog.cert_uuid(G.cert))
+    ctx = commitlog.load_cert(G.cert, ssl.Purpose.CLIENT_AUTH)
+    G.log_id = str(uuid.UUID(re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
+                             ctx.get_ca_certs()[0]['subject'][0][0][1])[0]))
     G.logdir = os.path.join('commitlog', G.log_id)
     os.makedirs(G.logdir, exist_ok=True)
 
