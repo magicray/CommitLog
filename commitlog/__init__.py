@@ -3,6 +3,7 @@ import re
 import ssl
 import json
 import uuid
+import time
 import asyncio
 import traceback
 import urllib.parse
@@ -215,16 +216,53 @@ class Client():
         self.quorum = self.client.quorum
         self.servers = servers
 
+    # PAXOS Client
     async def init(self):
         self.proposal_seq = self.log_seq = None
+        proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
-        url = f'/init/servers/{self.servers}'
-        values = sorted((await self.client.cluster(url)).values())
+        # Paxos PROMISE phase - block stale leaders from writing
+        url = f'/promise/proposal_seq/{proposal_seq}'
+        res = await self.client.cluster(url)
+        if self.quorum > len(res):
+            return
 
-        if values:
-            self.proposal_seq, self.log_seq = values[-1]
+        hdrs = set(res.values())
+        if 1 == len(hdrs):
+            header = hdrs.pop().split(b'\n', maxsplit=1)[0]
+            self.log_seq = json.loads(header)['log_seq']
+            self.proposal_seq = proposal_seq
+            return self.log_seq
 
-        return self.log_seq
+        # CRUX of the paxos protocol - Find the most recent log_seq with most
+        # recent accepted_seq. Only this value should be proposed
+        log_seq = accepted_seq = 0
+        commit_id = str(uuid.uuid4())
+        for val in res.values():
+            header, body = val.split(b'\n', maxsplit=1)
+            header = json.loads(header)
+
+            old = log_seq, accepted_seq
+            new = header['log_seq'], header['accepted_seq']
+
+            if new > old:
+                octets = body
+                log_seq = header['log_seq']
+                commit_id = header['commit_id']
+                accepted_seq = header['accepted_seq']
+
+        if 0 == log_seq or not octets:
+            return
+
+        # Paxos ACCEPT phase - re-write the last blob to sync all the nodes
+        url = f'/commit/proposal_seq/{proposal_seq}'
+        url += f'/log_seq/{log_seq}/commit_id/{commit_id}'
+        vlist = list((await self.client.cluster(url, octets)).values())
+
+        if len(vlist) >= self.quorum and all([vlist[0] == v for v in vlist]):
+            self.log_seq = vlist[0]['log_seq']
+            self.proposal_seq = proposal_seq
+            return self.log_seq
 
     async def write(self, octets):
         proposal_seq, log_seq = self.proposal_seq, self.log_seq + 1

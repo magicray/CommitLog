@@ -1,7 +1,6 @@
 import os
 import sys
 import json
-import uuid
 import time
 import shutil
 import hashlib
@@ -78,51 +77,8 @@ async def paxos_accept(proposal_seq, log_seq, commit_id, octets):
             return hdr
 
 
-# Used for leader election - Ideally, this should be part of the client code.
-# However, since leader election is done infrequently, its more maintainable to
-# keep this code here and call it over RPC. This makes client very lightweight.
-async def paxos_client(servers):
-    rpc = commitlog.HTTPClient(G.cert, servers)
-    quorum = rpc.quorum
-    proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
-
-    # Paxos PROMISE phase - block stale leaders from writing
-    res = await rpc.cluster(f'/promise/proposal_seq/{proposal_seq}')
-    if quorum > len(res):
-        return
-
-    hdrs = set(res.values())
-    if 1 == len(hdrs):
-        header = hdrs.pop().split(b'\n', maxsplit=1)[0]
-        return [proposal_seq, json.loads(header)['log_seq']]
-
-    # CRUX of the paxos protocol - Find the most recent log_seq with most
-    # recent accepted_seq. Only this value should be proposed
-    log_seq = accepted_seq = 0
-    commit_id = str(uuid.uuid4())
-    for val in res.values():
-        header, body = val.split(b'\n', maxsplit=1)
-        header = json.loads(header)
-
-        old = log_seq, accepted_seq
-        new = header['log_seq'], header['accepted_seq']
-
-        if new > old:
-            octets = body
-            log_seq = header['log_seq']
-            commit_id = header['commit_id']
-            accepted_seq = header['accepted_seq']
-
-    if 0 == log_seq or not octets:
-        return
-
-    # Paxos ACCEPT phase - re-write the last blob to bring all nodes in sync
-    url = f'/commit/proposal_seq/{proposal_seq}'
-    url += f'/log_seq/{log_seq}/commit_id/{commit_id}'
-    vlist = list((await rpc.cluster(url, octets)).values())
-
-    if len(vlist) >= quorum and all([vlist[0] == v for v in vlist]):
-        return [proposal_seq, vlist[0]['log_seq']]
+async def init():
+    return dict(log_seq=await G.client.init())
 
 
 async def echo(msg):
@@ -149,16 +105,14 @@ async def server():
         os.remove(path) if os.path.isfile(path) else shutil.rmtree(path)
 
     server = commitlog.HTTPServer(dict(
-        echo=echo, fetch=fetch, init=paxos_client,
+        echo=echo, fetch=fetch, init=init,
         promise=paxos_promise, commit=paxos_accept))
 
     await server.run(G.port, G.cert)
 
 
 async def append():
-    client = commitlog.Client(G.cert, G.servers)
-
-    if await client.init() is None:
+    if await G.client.init() is None:
         log('init failed')
         exit(1)
 
@@ -169,7 +123,7 @@ async def append():
 
         ts = time.time()
 
-        result = await client.write(octets)
+        result = await G.client.write(octets)
         if not result:
             log('commit failed')
             exit(1)
@@ -180,10 +134,9 @@ async def append():
 
 async def tail():
     seq = commitlog.max_seq(G.logdir) + 1
-    client = commitlog.Client(G.cert, G.servers)
 
     while True:
-        result = await client.read(seq)
+        result = await G.client.read(seq)
         if not result:
             await asyncio.sleep(1)
             continue
@@ -212,6 +165,9 @@ if '__main__' == __name__:
     G.log_id = str(commitlog.cert_uuid(G.cert))
     G.logdir = os.path.join('commitlog', G.log_id)
     os.makedirs(G.logdir, exist_ok=True)
+
+    if G.servers:
+        G.client = commitlog.Client(G.cert, G.servers)
 
     if G.port:
         asyncio.run(server())
