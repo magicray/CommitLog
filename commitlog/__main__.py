@@ -81,6 +81,11 @@ async def init():
     return dict(log_seq=await G.client.init())
 
 
+async def read(seq):
+    hdr, octets = await G.client.read(seq)
+    return json.dumps(hdr, sort_keys=True).encode() + b'\n' + octets
+
+
 async def echo(msg):
     return dict(msg=msg)
 
@@ -105,7 +110,7 @@ async def server():
         os.remove(path) if os.path.isfile(path) else shutil.rmtree(path)
 
     server = commitlog.HTTPServer(dict(
-        echo=echo, fetch=fetch, init=init,
+        echo=echo, fetch=fetch, init=init, read=read,
         promise=paxos_promise, commit=paxos_accept))
 
     await server.run(G.port, G.cert)
