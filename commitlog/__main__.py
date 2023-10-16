@@ -251,6 +251,10 @@ async def cmd_init():
 
 
 async def cmd_write():
+    if not os.path.isfile(G.write):
+        log('incomplete init')
+        exit(1)
+
     with open(G.write) as fd:
         obj = json.load(fd)
 
