@@ -92,8 +92,15 @@ class Client():
         self.quorum = self.client.quorum
         self.servers = servers
 
+        self.log_seq = self.proposal_seq = None
+
     # PAXOS Client
-    async def init(self):
+    async def init(self, proposal_seq=None, log_seq=None):
+        if proposal_seq is not None and log_seq is not None:
+            self.log_seq = log_seq
+            self.proposal_seq = proposal_seq
+            return dict(proposal_seq=self.proposal_seq, log_seq=self.log_seq)
+
         self.proposal_seq = self.log_seq = None
         proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
@@ -108,7 +115,7 @@ class Client():
             header = hdrs.pop().split(b'\n', maxsplit=1)[0]
             self.log_seq = json.loads(header)['log_seq']
             self.proposal_seq = proposal_seq
-            return self.log_seq
+            return dict(proposal_seq=self.proposal_seq, log_seq=self.log_seq)
 
         # CRUX of the paxos protocol - Find the most recent log_seq with most
         # recent accepted_seq. Only this value should be proposed
@@ -138,7 +145,7 @@ class Client():
         if len(vlist) >= self.quorum and all([vlist[0] == v for v in vlist]):
             self.log_seq = vlist[0]['log_seq']
             self.proposal_seq = proposal_seq
-            return self.log_seq
+            return dict(proposal_seq=self.proposal_seq, log_seq=self.log_seq)
 
     async def write(self, octets):
         proposal_seq, log_seq = self.proposal_seq, self.log_seq + 1

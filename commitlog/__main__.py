@@ -41,7 +41,8 @@ def max_seq(logdir):
 
 
 def dump(path, *objects):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.dirname(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
 
     tmp = path + '.' + str(uuid.uuid4()) + '.tmp'
     with open(tmp, 'wb') as fd:
@@ -117,7 +118,7 @@ async def paxos_accept(proposal_seq, log_seq, commit_id, octets):
 
 
 async def init():
-    return dict(log_seq=await G.client.init())
+    return await G.client.init()
 
 
 async def write(octets):
@@ -231,28 +232,50 @@ async def server():
         return await srv.serve_forever()
 
 
-async def append():
-    if await G.client.init() is None:
+async def cmd_init():
+    if os.path.isfile(G.init):
+        os.remove(G.init)
+
+    ts = time.time()
+
+    result = await G.client.init()
+    if result is None:
         log('init failed')
         exit(1)
 
-    while True:
-        octets = sys.stdin.buffer.read(1024*1024)
-        if not octets:
-            exit(0)
+    dump(G.init, result)
 
-        ts = time.time()
+    result['msec'] = int((time.time() - ts) * 1000)
 
-        result = await G.client.write(octets)
-        if not result:
-            log('commit failed')
-            exit(1)
-
-        result['msec'] = int((time.time() - ts) * 1000)
-        log(result)
+    log(json.dumps(result, sort_keys=True, indent=4))
 
 
-async def tail():
+async def cmd_write():
+    with open(G.write) as fd:
+        obj = json.load(fd)
+
+    os.remove(G.write)
+
+    octets = sys.stdin.buffer.read(1024*1024)
+
+    ts = time.time()
+
+    await G.client.init(obj['proposal_seq'], obj['log_seq'])
+
+    result = await G.client.write(octets)
+    if not result:
+        log('commit failed')
+        exit(1)
+
+    obj['log_seq'] = result['log_seq']
+    dump(G.write, obj)
+
+    result['msec'] = int((time.time() - ts) * 1000)
+
+    log(result)
+
+
+async def cmd_tail():
     seq = max_seq(G.logdir) + 1
 
     while True:
@@ -276,7 +299,8 @@ if '__main__' == __name__:
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
     G = argparse.ArgumentParser()
-    G.add_argument('--cmd', help='command - tail/append')
+    G.add_argument('--init', help='filename to store leader state')
+    G.add_argument('--write', help='filename to store/read leader state')
     G.add_argument('--port', help='port number for server')
     G.add_argument('--cert', help='Self signed certificate file path')
     G.add_argument('--servers', help='comma separated list of server ip:port')
@@ -293,7 +317,9 @@ if '__main__' == __name__:
 
     if G.port:
         asyncio.run(server())
-    elif 'append' == G.cmd:
-        asyncio.run(append())
-    elif 'tail' == G.cmd:
-        asyncio.run(tail())
+    elif G.init:
+        asyncio.run(cmd_init())
+    elif G.write:
+        asyncio.run(cmd_write())
+    else:
+        asyncio.run(cmd_tail())
