@@ -245,7 +245,7 @@ async def cmd_init():
 
     result['msec'] = int((time.time() - ts) * 1000)
 
-    log(json.dumps(result, sort_keys=True, indent=4))
+    log(result)
 
 
 async def cmd_write():
