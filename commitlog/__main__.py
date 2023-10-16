@@ -6,7 +6,6 @@ import time
 import uuid
 import json
 import shutil
-import hashlib
 import asyncio
 import logging
 import argparse
@@ -106,9 +105,8 @@ async def paxos_accept(proposal_seq, log_seq, commit_id, octets):
         if proposal_seq > promised_seq:
             dump(G.promise_filepath, dict(promised_seq=proposal_seq))
 
-        hdr = dict(accepted_seq=proposal_seq, log_id=G.log_id, log_seq=log_seq,
-                   commit_id=commit_id, length=len(octets),
-                   sha1=hashlib.sha1(octets).hexdigest())
+        hdr = dict(accepted_seq=proposal_seq, log_seq=log_seq,
+                   log_id=G.log_id, commit_id=commit_id, length=len(octets))
 
         if octets:
             dump(seq2path(log_seq), hdr, b'\n', octets)
