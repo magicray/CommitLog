@@ -23,22 +23,6 @@ def seq2path(log_seq):
     return path_join(G.logdir, log_seq//100000, log_seq//1000, log_seq)
 
 
-def sorted_dir(dirname):
-    files = [int(f) for f in os.listdir(dirname) if f.isdigit()]
-    return sorted(files, reverse=True)
-
-
-def max_seq(logdir):
-    # Traverse the three level directory hierarchy,
-    # picking the highest numbered dir/file at each level
-    for x in sorted_dir(logdir):
-        for y in sorted_dir(path_join(logdir, x)):
-            for f in sorted_dir(path_join(logdir, x, y)):
-                return f
-
-    return 0
-
-
 def dump(path, *objects):
     if os.path.dirname(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -74,9 +58,8 @@ async def paxos_promise(proposal_seq):
         dump(G.promise_filepath, dict(promised_seq=proposal_seq))
         os.sync()
 
-        seq = max_seq(G.logdir)
-        if seq > 0:
-            with open(seq2path(seq), 'rb') as fd:
+        if G.max_seq > 0:
+            with open(seq2path(G.max_seq), 'rb') as fd:
                 return fd.read()
 
         hdr = dict(log_seq=0, accepted_seq=0)
@@ -106,13 +89,36 @@ async def paxos_accept(proposal_seq, log_seq, commit_id, octets):
             dump(G.promise_filepath, dict(promised_seq=proposal_seq))
 
         hdr = dict(accepted_seq=proposal_seq, log_seq=log_seq,
-                   log_id=G.log_id, commit_id=commit_id, length=len(octets))
+                   cluster_id=G.cluster_id,
+                   commit_id=commit_id, length=len(octets))
 
         if octets:
             dump(seq2path(log_seq), hdr, b'\n', octets)
+            G.max_seq = max(G.max_seq, log_seq)
             os.sync()
 
             return hdr
+
+
+def sorted_dir(dirname):
+    return sorted([int(f) for f in os.listdir(dirname) if f.isdigit()])
+
+
+async def delete(seq):
+    seq = int(seq)
+
+    count = 0
+    for x in sorted_dir(G.logdir):
+        for y in sorted_dir(path_join(G.logdir, x)):
+            for f in sorted_dir(path_join(G.logdir, x, y)):
+                if f > seq:
+                    return count
+
+                os.remove(path_join(G.logdir, x, y, f))
+                count += 1
+
+            shutil.rmtree(path_join(G.logdir, x, y))
+        shutil.rmtree(path_join(G.logdir, x))
 
 
 async def init():
@@ -206,22 +212,9 @@ async def server():
     if not os.path.isfile(G.promise_filepath):
         dump(G.promise_filepath, dict(promised_seq=0))
 
-    # Cleanup
-    data_dirs = sorted_dir(G.logdir)
-    for f in os.listdir(G.logdir):
-        path = os.path.join(G.logdir, str(f))
-
-        if 'promised' == f:
-            continue
-
-        if f.isdigit() and int(f) > data_dirs[0]-10 and os.path.isdir(path):
-            continue
-
-        os.remove(path) if os.path.isfile(path) else shutil.rmtree(path)
-
     handler = HTTPHandler(dict(
         echo=echo, fetch=fetch, init=init, read=read, write=write,
-        promise=paxos_promise, commit=paxos_accept))
+        delete=delete, promise=paxos_promise, commit=paxos_accept))
 
     ctx = commitlog.load_cert(G.cert, ssl.Purpose.CLIENT_AUTH)
     srv = await asyncio.start_server(handler, None, G.port, ssl=ctx)
@@ -277,8 +270,12 @@ async def cmd_write():
     log(result)
 
 
+async def cmd_delete():
+    log(await G.client.delete(G.delete))
+
+
 async def cmd_tail():
-    seq = max_seq(G.logdir) + 1
+    seq = G.max_seq + 1
 
     while True:
         result = await G.client.read(seq)
@@ -297,11 +294,28 @@ async def cmd_tail():
         seq += 1
 
 
+def reverse_sorted_dir(dirname):
+    files = [int(f) for f in os.listdir(dirname) if f.isdigit()]
+    return sorted(files, reverse=True)
+
+
+def get_max_seq(logdir):
+    # Traverse the three level directory hierarchy,
+    # picking the highest numbered dir/file at each level
+    for x in reverse_sorted_dir(logdir):
+        for y in reverse_sorted_dir(path_join(logdir, x)):
+            for f in reverse_sorted_dir(path_join(logdir, x, y)):
+                return f
+
+    return 0
+
+
 if '__main__' == __name__:
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
     G = argparse.ArgumentParser()
     G.add_argument('--init', help='filename to store leader state')
+    G.add_argument('--delete', type=int, help='delete before this seq number')
     G.add_argument('--write', help='filename to store/read leader state')
     G.add_argument('--port', help='port number for server')
     G.add_argument('--cert', help='Self signed certificate file path')
@@ -309,10 +323,13 @@ if '__main__' == __name__:
     G = G.parse_args()
 
     ctx = commitlog.load_cert(G.cert, ssl.Purpose.CLIENT_AUTH)
-    G.log_id = str(uuid.UUID(re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
-                             ctx.get_ca_certs()[0]['subject'][0][0][1])[0]))
-    G.logdir = os.path.join('commitlog', G.log_id)
+    G.cluster_id = str(uuid.UUID(
+        re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
+                  ctx.get_ca_certs()[0]['subject'][0][0][1])[0]))
+    G.logdir = os.path.join('commitlog', G.cluster_id)
+
     os.makedirs(G.logdir, exist_ok=True)
+    G.max_seq = get_max_seq(G.logdir)
 
     if G.servers:
         G.client = commitlog.Client(G.cert, G.servers)
@@ -323,5 +340,7 @@ if '__main__' == __name__:
         asyncio.run(cmd_init())
     elif G.write:
         asyncio.run(cmd_write())
+    elif G.delete:
+        asyncio.run(cmd_delete())
     else:
         asyncio.run(cmd_tail())

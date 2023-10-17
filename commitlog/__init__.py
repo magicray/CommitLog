@@ -161,6 +161,9 @@ class Client():
 
                 return values[0]
 
+    async def delete(self, seq):
+        return await self.client.cluster(f'/delete/seq/{seq}')
+
     async def read(self, seq):
         url = f'/fetch/log_seq/{seq}/what/header'
         res = await self.client.cluster(url)
