@@ -61,7 +61,8 @@ class HTTPClient():
                 assert (length == len(octets))
                 if 'application/json' == mime_type:
                     return json.loads(octets)
-                return octets
+                if length > 0:
+                    return octets
         except Exception:
             if status:
                 traceback.print_exc()
@@ -76,7 +77,7 @@ class HTTPClient():
         res = await asyncio.gather(
             *[self.server(s, resource, octets) for s in servers])
 
-        return {s: r for s, r in zip(servers, res) if r}
+        return {s: r for s, r in zip(servers, res) if r is not None}
 
     def __del__(self):
         for server, (reader, writer) in self.conns.items():
