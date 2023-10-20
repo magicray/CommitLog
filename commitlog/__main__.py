@@ -5,6 +5,7 @@ import ssl
 import time
 import uuid
 import json
+import fcntl
 import shutil
 import asyncio
 import logging
@@ -19,8 +20,26 @@ def path_join(*path):
     return os.path.join(*[str(p) for p in path])
 
 
-def seq2path(log_seq):
-    return path_join(G.logdir, log_seq//100000, log_seq//1000, log_seq)
+def seq2path(log_id, log_seq):
+    return path_join('commitlog', log_id,
+                     log_seq//100000, log_seq//1000, log_seq)
+
+
+def reverse_sorted_dir(dirname):
+    files = [int(f) for f in os.listdir(dirname) if f.isdigit()]
+    return sorted(files, reverse=True)
+
+
+def get_max_seq(log_id):
+    logdir = path_join('commitlog', log_id)
+    # Traverse the three level directory hierarchy,
+    # picking the highest numbered dir/file at each level
+    for x in reverse_sorted_dir(logdir):
+        for y in reverse_sorted_dir(path_join(logdir, x)):
+            for f in reverse_sorted_dir(path_join(logdir, x, y)):
+                return f
+
+    return 0
 
 
 def dump(path, *objects):
@@ -38,66 +57,85 @@ def dump(path, *objects):
     os.replace(tmp, path)
 
 
-async def fetch(log_seq, what):
-    path = seq2path(int(log_seq))
+async def fetch(log_id, log_seq, what):
+    path = seq2path(log_id, int(log_seq))
     if os.path.isfile(path):
         with open(path, 'rb') as fd:
             return fd.read() if 'body' == what else json.loads(fd.readline())
 
 
+def get_promised_seq(logdir):
+    promise_filepath = path_join(logdir, 'promised')
+    if os.path.isfile(promise_filepath):
+        with open(promise_filepath) as fd:
+            return json.load(fd)['promised_seq']
+
+    return 0
+
+
+def put_promised_seq(logdir, proposal_seq):
+    dump(path_join(logdir, 'promised'), dict(promised_seq=proposal_seq))
+
+
 # PROMISE - Block stale leaders and return the most recent accepted value.
 # Client will propose the most recent across servers in the accept phase
-async def paxos_promise(proposal_seq):
+async def paxos_promise(log_id, proposal_seq):
     proposal_seq = int(proposal_seq)
 
-    with open(G.promise_filepath) as fd:
-        promised_seq = json.load(fd)['promised_seq']
+    logdir = path_join('commitlog', log_id)
+    os.makedirs(logdir, exist_ok=True)
 
-    # proposal_seq has to be strictly bigger than whatever seen so far
-    if proposal_seq > promised_seq:
-        dump(G.promise_filepath, dict(promised_seq=proposal_seq))
-        os.sync()
+    lockfd = os.open(logdir, os.O_RDONLY)
+    try:
+        fcntl.flock(lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-        if G.max_seq > 0:
-            with open(seq2path(G.max_seq), 'rb') as fd:
-                return fd.read()
+        # proposal_seq has to be strictly bigger than whatever seen so far
+        if proposal_seq > get_promised_seq(logdir):
+            put_promised_seq(logdir, proposal_seq)
+            os.sync()
 
-        hdr = dict(log_seq=0, accepted_seq=0)
-        return json.dumps(hdr, sort_keys=True).encode() + b'\n'
+            max_seq = get_max_seq(log_id)
+            if max_seq > 0:
+                with open(seq2path(log_id, max_seq), 'rb') as fd:
+                    return fd.read()
+
+            hdr = dict(log_seq=0, accepted_seq=0)
+            return json.dumps(hdr, sort_keys=True).encode() + b'\n'
+    finally:
+        os.close(lockfd)
 
 
 # ACCEPT - Client has sent the most recent value from the promise phase.
 # Stale leaders blocked. Only the most recent can reach this stage.
-async def paxos_accept(proposal_seq, log_seq, commit_id, octets):
+async def paxos_accept(log_id, proposal_seq, log_seq, commit_id, octets):
     log_seq = int(log_seq)
     proposal_seq = int(proposal_seq)
 
-    with open(G.promise_filepath) as fd:
-        promised_seq = json.load(fd)['promised_seq']
+    logdir = path_join('commitlog', log_id)
+    os.makedirs(logdir, exist_ok=True)
 
-    # proposal_seq has to be bigger than or equal to the biggest seen so far
-    if proposal_seq >= promised_seq:
-        # Continuous cleanup - remove an older file before writing a new one
-        # Retain only the most recent 1 million log records
-        old_log_record = seq2path(log_seq - 1000*1000)
-        if os.path.isfile(old_log_record):
-            os.remove(old_log_record)
+    lockfd = os.open(logdir, os.O_RDONLY)
+    try:
+        fcntl.flock(lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-        # Record new proposal_seq as it is bigger than the current value.
-        # Any future writes with a smaller seq would be rejected.
-        if proposal_seq > promised_seq:
-            dump(G.promise_filepath, dict(promised_seq=proposal_seq))
+        promised_seq = get_promised_seq(logdir)
 
-        hdr = dict(accepted_seq=proposal_seq, log_seq=log_seq,
-                   cluster_id=G.cluster_id,
-                   commit_id=commit_id, length=len(octets))
+        # proposal_seq should be >= to the biggest seen so far
+        if proposal_seq >= promised_seq:
+            # Record new proposal_seq as it is bigger than the current value.
+            # Any future writes with a smaller seq would be rejected.
+            if proposal_seq > promised_seq:
+                put_promised_seq(logdir, proposal_seq)
 
-        if octets:
-            dump(seq2path(log_seq), hdr, b'\n', octets)
-            G.max_seq = max(G.max_seq, log_seq)
+            hdr = dict(accepted_seq=proposal_seq, log_seq=log_seq,
+                       log_id=log_id, commit_id=commit_id, length=len(octets))
+
+            dump(seq2path(log_id, log_seq), hdr, b'\n', octets)
             os.sync()
 
             return hdr
+    finally:
+        os.close(lockfd)
 
 
 def sorted_dir(dirname):
@@ -149,6 +187,10 @@ class HTTPHandler():
         while True:
             try:
                 peer = writer.get_extra_info('socket').getpeername()
+                cert = writer.get_extra_info('peercert')
+                log_id = str(uuid.UUID(
+                    re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
+                              cert['subject'][0][0][1])[0]))
 
                 line = await reader.readline()
                 p = line.decode().split()[1].strip('/').split('/')
@@ -176,7 +218,7 @@ class HTTPHandler():
             mime_type = 'application/octet-stream'
 
             try:
-                res = await self.methods[method](**params)
+                res = await self.methods[method](log_id, **params)
                 if res is None:
                     res = b''
                 else:
@@ -202,16 +244,11 @@ class HTTPHandler():
                 return writer.close()
 
             params.pop('octets', None)
-            log(f'{peer} {count} {method} {params} {length} {len(res)}')
+            log(f'{peer} {count} {method} {status} {params} {len(res)}')
             count += 1
 
 
 async def server():
-    G.promise_filepath = os.path.join(G.logdir, 'promised')
-
-    if not os.path.isfile(G.promise_filepath):
-        dump(G.promise_filepath, dict(promised_seq=0))
-
     handler = HTTPHandler(dict(
         echo=echo, fetch=fetch, init=init, read=read, write=write,
         delete=delete, promise=paxos_promise, commit=paxos_accept))
@@ -274,8 +311,10 @@ async def cmd_delete():
     log(await G.client.delete(G.delete))
 
 
-async def cmd_tail():
-    seq = G.max_seq + 1
+async def cmd_tail(log_id):
+    os.makedirs(path_join('commitlog', log_id), exist_ok=True)
+
+    seq = get_max_seq(log_id) + 1
 
     while True:
         result = await G.client.read(seq)
@@ -285,29 +324,13 @@ async def cmd_tail():
 
         hdr, octets = result
 
-        path = seq2path(seq)
+        path = seq2path(log_id, seq)
         dump(path, hdr, b'\n', octets)
 
         with open(path) as fd:
             log(fd.readline().strip())
 
         seq += 1
-
-
-def reverse_sorted_dir(dirname):
-    files = [int(f) for f in os.listdir(dirname) if f.isdigit()]
-    return sorted(files, reverse=True)
-
-
-def get_max_seq(logdir):
-    # Traverse the three level directory hierarchy,
-    # picking the highest numbered dir/file at each level
-    for x in reverse_sorted_dir(logdir):
-        for y in reverse_sorted_dir(path_join(logdir, x)):
-            for f in reverse_sorted_dir(path_join(logdir, x, y)):
-                return f
-
-    return 0
 
 
 if '__main__' == __name__:
@@ -323,13 +346,11 @@ if '__main__' == __name__:
     G = G.parse_args()
 
     ctx = commitlog.load_cert(G.cert, ssl.Purpose.CLIENT_AUTH)
-    G.cluster_id = str(uuid.UUID(
+    log_id = str(uuid.UUID(
         re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
                   ctx.get_ca_certs()[0]['subject'][0][0][1])[0]))
-    G.logdir = os.path.join('commitlog', G.cluster_id)
 
-    os.makedirs(G.logdir, exist_ok=True)
-    G.max_seq = get_max_seq(G.logdir)
+    os.makedirs('commitlog', exist_ok=True)
 
     if G.servers:
         G.client = commitlog.Client(G.cert, G.servers)
@@ -343,4 +364,4 @@ if '__main__' == __name__:
     elif G.delete:
         asyncio.run(cmd_delete())
     else:
-        asyncio.run(cmd_tail())
+        asyncio.run(cmd_tail(log_id))
