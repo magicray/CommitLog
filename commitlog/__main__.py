@@ -25,15 +25,14 @@ def seq2path(log_id, log_seq):
                      log_seq//100000, log_seq//1000, log_seq)
 
 
-def reverse_sorted_dir(dirname):
-    files = [int(f) for f in os.listdir(dirname) if f.isdigit()]
-    return sorted(files, reverse=True)
-
-
 def get_max_seq(log_id):
-    logdir = path_join('commitlog', log_id)
+    def reverse_sorted_dir(dirname):
+        files = [int(f) for f in os.listdir(dirname) if f.isdigit()]
+        return sorted(files, reverse=True)
+
     # Traverse the three level directory hierarchy,
     # picking the highest numbered dir/file at each level
+    logdir = path_join('commitlog', log_id)
     for x in reverse_sorted_dir(logdir):
         for y in reverse_sorted_dir(path_join(logdir, x)):
             for f in reverse_sorted_dir(path_join(logdir, x, y)):
@@ -43,8 +42,7 @@ def get_max_seq(log_id):
 
 
 def dump(path, *objects):
-    if os.path.dirname(path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
 
     tmp = path + '.' + str(uuid.uuid4()) + '.tmp'
     with open(tmp, 'wb') as fd:
@@ -59,15 +57,17 @@ def dump(path, *objects):
 
 async def fetch(log_id, log_seq, what):
     path = seq2path(log_id, int(log_seq))
+
     if os.path.isfile(path):
         with open(path, 'rb') as fd:
             return fd.read() if 'body' == what else json.loads(fd.readline())
 
 
 def get_promised_seq(logdir):
-    promise_filepath = path_join(logdir, 'promised')
-    if os.path.isfile(promise_filepath):
-        with open(promise_filepath) as fd:
+    path = path_join(logdir, 'promised')
+
+    if os.path.isfile(path):
+        with open(path) as fd:
             return json.load(fd)['promised_seq']
 
     return 0
@@ -89,11 +89,13 @@ async def paxos_promise(log_id, proposal_seq):
     try:
         fcntl.flock(lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-        # proposal_seq has to be strictly bigger than whatever seen so far
+        # Record new proposal_seq as it is bigger than the current value.
+        # Any future writes with a smaller seq would be rejected.
         if proposal_seq > get_promised_seq(logdir):
             put_promised_seq(logdir, proposal_seq)
             os.sync()
 
+            # Paxos PROMISE response - return latest log record
             max_seq = get_max_seq(log_id)
             if max_seq > 0:
                 with open(seq2path(log_id, max_seq), 'rb') as fd:
@@ -111,6 +113,9 @@ async def paxos_accept(log_id, proposal_seq, log_seq, commit_id, octets):
     log_seq = int(log_seq)
     proposal_seq = int(proposal_seq)
 
+    if not octets or type(octets) is not bytes:
+        raise Exception('INVALID_OCTETS')
+
     logdir = path_join('commitlog', log_id)
     os.makedirs(logdir, exist_ok=True)
 
@@ -120,13 +125,13 @@ async def paxos_accept(log_id, proposal_seq, log_seq, commit_id, octets):
 
         promised_seq = get_promised_seq(logdir)
 
-        # proposal_seq should be >= to the biggest seen so far
-        if proposal_seq >= promised_seq:
-            # Record new proposal_seq as it is bigger than the current value.
-            # Any future writes with a smaller seq would be rejected.
-            if proposal_seq > promised_seq:
-                put_promised_seq(logdir, proposal_seq)
+        # Record new proposal_seq as it is bigger than the current value.
+        # Any future writes with a smaller seq would be rejected.
+        if proposal_seq > promised_seq:
+            put_promised_seq(logdir, proposal_seq)
 
+        # Paxos ACCEPT response - Save octets and return success
+        if proposal_seq >= promised_seq:
             hdr = dict(accepted_seq=proposal_seq, log_seq=log_seq,
                        log_id=log_id, commit_id=commit_id, length=len(octets))
 
@@ -138,42 +143,42 @@ async def paxos_accept(log_id, proposal_seq, log_seq, commit_id, octets):
         os.close(lockfd)
 
 
-def sorted_dir(dirname):
-    return sorted([int(f) for f in os.listdir(dirname) if f.isdigit()])
-
-
-async def delete(seq):
+async def delete(log_id, seq):
     seq = int(seq)
 
+    def sorted_dir(dirname):
+        return sorted([int(f) for f in os.listdir(dirname) if f.isdigit()])
+
     count = 0
-    for x in sorted_dir(G.logdir):
-        for y in sorted_dir(path_join(G.logdir, x)):
-            for f in sorted_dir(path_join(G.logdir, x, y)):
+    logdir = path_join('commitlog', log_id)
+    for x in sorted_dir(logdir):
+        for y in sorted_dir(path_join(logdir, x)):
+            for f in sorted_dir(path_join(logdir, x, y)):
                 if f > seq:
                     return count
 
-                os.remove(path_join(G.logdir, x, y, f))
+                os.remove(path_join(logdir, x, y, f))
                 count += 1
 
-            shutil.rmtree(path_join(G.logdir, x, y))
-        shutil.rmtree(path_join(G.logdir, x))
+            shutil.rmtree(path_join(logdir, x, y))
+        shutil.rmtree(path_join(logdir, x))
 
 
-async def init():
+async def init(log_id):
     return await G.client.init()
 
 
-async def write(octets):
+async def write(log_id, octets):
     return await G.client.write(octets)
 
 
-async def read(seq):
+async def read(log_id, seq):
     hdr, octets = await G.client.read(seq)
     return json.dumps(hdr, sort_keys=True).encode() + b'\n' + octets
 
 
-async def echo(msg):
-    return dict(msg=msg)
+async def maxseq(log_id):
+    return get_max_seq(log_id)
 
 
 class HTTPHandler():
@@ -250,7 +255,7 @@ class HTTPHandler():
 
 async def server():
     handler = HTTPHandler(dict(
-        echo=echo, fetch=fetch, init=init, read=read, write=write,
+        init=init, read=read, write=write, fetch=fetch, maxseq=maxseq,
         delete=delete, promise=paxos_promise, commit=paxos_accept))
 
     ctx = commitlog.load_cert(G.cert, ssl.Purpose.CLIENT_AUTH)
@@ -261,8 +266,10 @@ async def server():
 
 
 async def cmd_init():
-    if os.path.isfile(G.init):
-        os.remove(G.init)
+    path = os.path.abspath(G.init)
+
+    if os.path.isfile(path):
+        os.remove(path)
 
     ts = time.time()
 
@@ -271,7 +278,7 @@ async def cmd_init():
         log('init failed')
         exit(1)
 
-    dump(G.init, result)
+    dump(path, result)
 
     result['msec'] = int((time.time() - ts) * 1000)
 
@@ -279,14 +286,16 @@ async def cmd_init():
 
 
 async def cmd_write():
-    if not os.path.isfile(G.write):
+    path = os.path.abspath(G.write)
+
+    if not os.path.isfile(path):
         log('incomplete init')
         exit(1)
 
-    with open(G.write) as fd:
+    with open(path) as fd:
         obj = json.load(fd)
 
-    os.remove(G.write)
+    os.remove(path)
 
     octets = sys.stdin.buffer.read(1024*1024)
 
@@ -300,7 +309,7 @@ async def cmd_write():
         exit(1)
 
     obj['log_seq'] = result['log_seq']
-    dump(G.write, obj)
+    dump(path, obj)
 
     result['msec'] = int((time.time() - ts) * 1000)
 
