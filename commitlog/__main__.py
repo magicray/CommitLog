@@ -42,6 +42,7 @@ def get_max_seq(log_id):
 
 
 def dump(path, *objects):
+    path = os.path.abspath(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
     tmp = path + '.' + str(uuid.uuid4()) + '.tmp'
@@ -172,8 +173,8 @@ async def write(log_id, octets):
     return await G.client.write(octets)
 
 
-async def read(log_id, seq):
-    hdr, octets = await G.client.read(seq)
+async def read(log_id, log_seq):
+    hdr, octets = await G.client.read(log_seq)
     return json.dumps(hdr, sort_keys=True).encode() + b'\n' + octets
 
 
@@ -266,10 +267,8 @@ async def server():
 
 
 async def cmd_init():
-    path = os.path.abspath(G.init)
-
-    if os.path.isfile(path):
-        os.remove(path)
+    if os.path.isfile(G.init):
+        os.remove(G.init)
 
     ts = time.time()
 
@@ -278,7 +277,7 @@ async def cmd_init():
         log('init failed')
         exit(1)
 
-    dump(path, result)
+    dump(G.init, result)
 
     result['msec'] = int((time.time() - ts) * 1000)
 
@@ -286,16 +285,14 @@ async def cmd_init():
 
 
 async def cmd_write():
-    path = os.path.abspath(G.write)
-
-    if not os.path.isfile(path):
+    if not os.path.isfile(G.write):
         log('incomplete init')
         exit(1)
 
-    with open(path) as fd:
+    with open(G.write) as fd:
         obj = json.load(fd)
 
-    os.remove(path)
+    os.remove(G.write)
 
     octets = sys.stdin.buffer.read(1024*1024)
 
@@ -309,7 +306,7 @@ async def cmd_write():
         exit(1)
 
     obj['log_seq'] = result['log_seq']
-    dump(path, obj)
+    dump(G.write, obj)
 
     result['msec'] = int((time.time() - ts) * 1000)
 
