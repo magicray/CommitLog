@@ -162,11 +162,11 @@ class Client():
 
                 return values[0]
 
-    async def delete(self, seq):
-        return await self.client.cluster(f'/delete/seq/{seq}')
+    async def delete(self, log_seq):
+        return await self.client.cluster(f'/delete/log_seq/{log_seq}')
 
-    async def read(self, seq):
-        url = f'/fetch/log_seq/{seq}/what/header'
+    async def read(self, log_seq):
+        url = f'/fetch/log_seq/{log_seq}/what/header'
         res = await self.client.cluster(url)
         if self.quorum > len(res):
             return
@@ -182,7 +182,7 @@ class Client():
             return
 
         try:
-            url = f'/fetch/log_seq/{seq}/what/body'
+            url = f'/fetch/log_seq/{log_seq}/what/body'
             result = await self.client.server(hdrs[0][2], url)
             if not result:
                 return
