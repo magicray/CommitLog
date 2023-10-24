@@ -144,8 +144,8 @@ async def paxos_accept(log_id, proposal_seq, log_seq, commit_id, octets):
         os.close(lockfd)
 
 
-async def delete(log_id, seq):
-    seq = int(seq)
+async def delete(log_id, log_seq):
+    log_seq = int(log_seq)
 
     def sorted_dir(dirname):
         return sorted([int(f) for f in os.listdir(dirname) if f.isdigit()])
@@ -155,7 +155,7 @@ async def delete(log_id, seq):
     for x in sorted_dir(logdir):
         for y in sorted_dir(path_join(logdir, x)):
             for f in sorted_dir(path_join(logdir, x, y)):
-                if f > seq:
+                if f > log_seq:
                     return count
 
                 os.remove(path_join(logdir, x, y, f))
@@ -163,23 +163,6 @@ async def delete(log_id, seq):
 
             shutil.rmtree(path_join(logdir, x, y))
         shutil.rmtree(path_join(logdir, x))
-
-
-async def init(log_id):
-    return await G.client.init()
-
-
-async def write(log_id, octets):
-    return await G.client.write(octets)
-
-
-async def read(log_id, log_seq):
-    hdr, octets = await G.client.read(log_seq)
-    return json.dumps(hdr, sort_keys=True).encode() + b'\n' + octets
-
-
-async def maxseq(log_id):
-    return get_max_seq(log_id)
 
 
 class HTTPHandler():
@@ -256,8 +239,8 @@ class HTTPHandler():
 
 async def server():
     handler = HTTPHandler(dict(
-        init=init, read=read, write=write, fetch=fetch, maxseq=maxseq,
-        delete=delete, promise=paxos_promise, commit=paxos_accept))
+        fetch=fetch, delete=delete,
+        promise=paxos_promise, commit=paxos_accept))
 
     ctx = commitlog.load_cert(G.cert, ssl.Purpose.CLIENT_AUTH)
     srv = await asyncio.start_server(handler, None, G.port, ssl=ctx)
@@ -351,13 +334,6 @@ if '__main__' == __name__:
     G.add_argument('--servers', help='comma separated list of server ip:port')
     G = G.parse_args()
 
-    ctx = commitlog.load_cert(G.cert, ssl.Purpose.CLIENT_AUTH)
-    log_id = str(uuid.UUID(
-        re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
-                  ctx.get_ca_certs()[0]['subject'][0][0][1])[0]))
-
-    os.makedirs('commitlog', exist_ok=True)
-
     if G.servers:
         G.client = commitlog.Client(G.cert, G.servers)
 
@@ -370,4 +346,9 @@ if '__main__' == __name__:
     elif G.delete:
         asyncio.run(cmd_delete())
     else:
+        ctx = commitlog.load_cert(G.cert, ssl.Purpose.CLIENT_AUTH)
+        log_id = str(uuid.UUID(
+            re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
+                      ctx.get_ca_certs()[0]['subject'][0][0][1])[0]))
+
         asyncio.run(cmd_tail(log_id))
