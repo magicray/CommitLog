@@ -249,50 +249,29 @@ async def server():
         return await srv.serve_forever()
 
 
-async def cmd_init():
-    if os.path.isfile(G.init):
-        os.remove(G.init)
-
+async def cmd_append():
     ts = time.time()
 
-    result = await G.client.init()
-    if result is None:
-        log('init failed')
-        exit(1)
-
-    dump(G.init, result)
-
-    result['msec'] = int((time.time() - ts) * 1000)
-
-    log(result)
-
-
-async def cmd_write():
-    if not os.path.isfile(G.write):
-        log('incomplete init')
-        exit(1)
-
-    with open(G.write) as fd:
-        obj = json.load(fd)
-
-    os.remove(G.write)
-
-    octets = sys.stdin.buffer.read(1024*1024)
-
-    ts = time.time()
+    if os.path.isfile(G.append):
+        with open(G.append) as fd:
+            obj = json.load(fd)
+        os.remove(G.append)
+    else:
+        obj = await G.client.init()
+        if obj is None:
+            log('init failed')
+            exit(1)
 
     await G.client.init(obj['proposal_seq'], obj['log_seq'])
-
-    result = await G.client.write(octets)
+    result = await G.client.write(sys.stdin.buffer.read())
     if not result:
         log('commit failed')
         exit(1)
 
     obj['log_seq'] = result['log_seq']
-    dump(G.write, obj)
+    dump(G.append, obj)
 
     result['msec'] = int((time.time() - ts) * 1000)
-
     log(result)
 
 
@@ -326,12 +305,11 @@ if '__main__' == __name__:
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
     G = argparse.ArgumentParser()
-    G.add_argument('--init', help='filename to store leader state')
-    G.add_argument('--delete', type=int, help='delete before this seq number')
-    G.add_argument('--write', help='filename to store/read leader state')
     G.add_argument('--port', help='port number for server')
     G.add_argument('--cert', help='Self signed certificate file path')
     G.add_argument('--servers', help='comma separated list of server ip:port')
+    G.add_argument('--append', help='filename to store/read leader state')
+    G.add_argument('--delete', type=int, help='delete before this seq number')
     G = G.parse_args()
 
     if G.servers:
@@ -339,10 +317,8 @@ if '__main__' == __name__:
 
     if G.port:
         asyncio.run(server())
-    elif G.init:
-        asyncio.run(cmd_init())
-    elif G.write:
-        asyncio.run(cmd_write())
+    elif G.append:
+        asyncio.run(cmd_append())
     elif G.delete:
         asyncio.run(cmd_delete())
     else:
