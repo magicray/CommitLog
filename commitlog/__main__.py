@@ -252,31 +252,27 @@ async def server():
 async def cmd_append():
     ts = time.time()
 
-    if os.path.isfile(G.append):
+    if not os.path.isfile(G.append):
+        obj = await G.client.reset_leader()
+    else:
         with open(G.append) as fd:
             obj = json.load(fd)
         os.remove(G.append)
-    else:
-        obj = await G.client.init()
-        if obj is None:
-            log('init failed')
-            exit(1)
+        obj = await G.client.reset_leader(obj['proposal_seq'], obj['log_seq'])
 
-    await G.client.init(obj['proposal_seq'], obj['log_seq'])
-    result = await G.client.write(sys.stdin.buffer.read())
+    if obj is None:
+        log('reset_leader failed')
+        exit(1)
+
+    result = await G.client.append(sys.stdin.buffer.read())
     if not result:
         log('commit failed')
         exit(1)
 
     obj['log_seq'] = result['log_seq']
-    dump(G.append, obj)
-
     result['msec'] = int((time.time() - ts) * 1000)
+    dump(G.append, obj)
     log(result)
-
-
-async def cmd_delete():
-    log(await G.client.delete(G.delete))
 
 
 async def cmd_tail(log_id):
@@ -285,7 +281,7 @@ async def cmd_tail(log_id):
     seq = get_max_seq(log_id) + 1
 
     while True:
-        result = await G.client.read(seq)
+        result = await G.client.tail(seq)
         if not result:
             await asyncio.sleep(1)
             continue
@@ -309,7 +305,7 @@ if '__main__' == __name__:
     G.add_argument('--cert', help='Self signed certificate file path')
     G.add_argument('--servers', help='comma separated list of server ip:port')
     G.add_argument('--append', help='filename to store/read leader state')
-    G.add_argument('--delete', type=int, help='delete before this seq number')
+    G.add_argument('--purge', type=int, help='purge before this seq number')
     G = G.parse_args()
 
     if G.servers:
@@ -319,8 +315,8 @@ if '__main__' == __name__:
         asyncio.run(server())
     elif G.append:
         asyncio.run(cmd_append())
-    elif G.delete:
-        asyncio.run(cmd_delete())
+    elif G.purge:
+        log(asyncio.run(G.client.purge(G.purge)))
     else:
         ctx = commitlog.load_cert(G.cert, ssl.Purpose.CLIENT_AUTH)
         log_id = str(uuid.UUID(

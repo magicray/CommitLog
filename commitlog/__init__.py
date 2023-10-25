@@ -96,7 +96,7 @@ class Client():
         self.log_seq = self.proposal_seq = None
 
     # PAXOS Client
-    async def init(self, proposal_seq=None, log_seq=None):
+    async def reset_leader(self, proposal_seq=None, log_seq=None):
         if proposal_seq is not None and log_seq is not None:
             self.log_seq = log_seq
             self.proposal_seq = proposal_seq
@@ -148,7 +148,7 @@ class Client():
             self.proposal_seq = proposal_seq
             return dict(proposal_seq=self.proposal_seq, log_seq=self.log_seq)
 
-    async def write(self, octets):
+    async def append(self, octets):
         proposal_seq, log_seq = self.proposal_seq, self.log_seq + 1
         self.proposal_seq = self.log_seq = None
 
@@ -162,10 +162,7 @@ class Client():
 
                 return values[0]
 
-    async def delete(self, log_seq):
-        return await self.client.cluster(f'/delete/log_seq/{log_seq}')
-
-    async def read(self, log_seq):
+    async def tail(self, log_seq):
         url = f'/fetch/log_seq/{log_seq}/what/header'
         res = await self.client.cluster(url)
         if self.quorum > len(res):
@@ -197,3 +194,6 @@ class Client():
         assert (hdrs[0][1] == json.dumps(hdr, sort_keys=True))
 
         return hdr, octets
+
+    async def purge(self, log_seq):
+        return await self.client.cluster(f'/delete/log_seq/{log_seq}')
