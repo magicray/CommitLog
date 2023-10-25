@@ -163,7 +163,7 @@ class Client():
                 return values[0]
 
     async def tail(self, log_seq):
-        url = f'/fetch/log_seq/{log_seq}/what/header'
+        url = f'/read/log_seq/{log_seq}/what/header'
         res = await self.client.cluster(url)
         if self.quorum > len(res):
             return
@@ -179,7 +179,7 @@ class Client():
             return
 
         try:
-            url = f'/fetch/log_seq/{log_seq}/what/body'
+            url = f'/read/log_seq/{log_seq}/what/body'
             result = await self.client.server(hdrs[0][2], url)
             if not result:
                 return
@@ -196,4 +196,4 @@ class Client():
         return hdr, octets
 
     async def purge(self, log_seq):
-        return await self.client.cluster(f'/delete/log_seq/{log_seq}')
+        return await self.client.cluster(f'/purge/log_seq/{log_seq}')

@@ -21,8 +21,8 @@ def path_join(*path):
 
 
 def seq2path(log_id, log_seq):
-    return path_join('commitlog', log_id,
-                     log_seq//100000, log_seq//1000, log_seq)
+    x, y = log_seq//1000000, log_seq//1000
+    return path_join('commitlog', log_id, x, y, log_seq)
 
 
 def get_max_seq(log_id):
@@ -56,7 +56,7 @@ def dump(path, *objects):
     os.replace(tmp, path)
 
 
-async def fetch(log_id, log_seq, what):
+async def read(log_id, log_seq, what):
     path = seq2path(log_id, int(log_seq))
 
     if os.path.isfile(path):
@@ -94,7 +94,6 @@ async def paxos_promise(log_id, proposal_seq):
         # Any future writes with a smaller seq would be rejected.
         if proposal_seq > get_promised_seq(logdir):
             put_promised_seq(logdir, proposal_seq)
-            os.sync()
 
             # Paxos PROMISE response - return latest log record
             max_seq = get_max_seq(log_id)
@@ -105,6 +104,7 @@ async def paxos_promise(log_id, proposal_seq):
             hdr = dict(log_seq=0, accepted_seq=0)
             return json.dumps(hdr, sort_keys=True).encode() + b'\n'
     finally:
+        os.sync()
         os.close(lockfd)
 
 
@@ -137,14 +137,14 @@ async def paxos_accept(log_id, proposal_seq, log_seq, commit_id, octets):
                        log_id=log_id, commit_id=commit_id, length=len(octets))
 
             dump(seq2path(log_id, log_seq), hdr, b'\n', octets)
-            os.sync()
 
             return hdr
     finally:
+        os.sync()
         os.close(lockfd)
 
 
-async def delete(log_id, log_seq):
+async def purge(log_id, log_seq):
     log_seq = int(log_seq)
 
     def sorted_dir(dirname):
@@ -239,8 +239,7 @@ class HTTPHandler():
 
 async def server():
     handler = HTTPHandler(dict(
-        fetch=fetch, delete=delete,
-        promise=paxos_promise, commit=paxos_accept))
+        read=read, purge=purge, promise=paxos_promise, commit=paxos_accept))
 
     ctx = commitlog.load_cert(G.cert, ssl.Purpose.CLIENT_AUTH)
     srv = await asyncio.start_server(handler, None, G.port, ssl=ctx)
@@ -275,7 +274,7 @@ async def cmd_append():
     log(result)
 
 
-async def cmd_tail(log_id):
+async def cmd_backup(log_id):
     os.makedirs(path_join('commitlog', log_id), exist_ok=True)
 
     seq = get_max_seq(log_id) + 1
@@ -323,4 +322,4 @@ if '__main__' == __name__:
             re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
                       ctx.get_ca_certs()[0]['subject'][0][0][1])[0]))
 
-        asyncio.run(cmd_tail(log_id))
+        asyncio.run(cmd_backup(log_id))
