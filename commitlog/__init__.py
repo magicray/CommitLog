@@ -16,10 +16,15 @@ def load_cert(path, purpose):
 
 
 class HTTPClient():
-    def __init__(self, cert, servers):
+    def __init__(self, cacert, cert, servers):
         servers = [s.split(':') for s in servers.split(',')]
 
-        self.SSL = load_cert(cert, ssl.Purpose.SERVER_AUTH)
+        self.SSL = ssl.create_default_context(
+            cafile=cacert, purpose=ssl.Purpose.SERVER_AUTH)
+        self.SSL.load_cert_chain(cert, cert)
+        self.SSL.verify_mode = ssl.CERT_REQUIRED
+        self.SSL.check_hostname = False
+
         self.conns = {(ip, int(port)): (None, None) for ip, port in servers}
         self.quorum = int(len(self.conns)/2) + 1
 
@@ -88,8 +93,8 @@ class HTTPClient():
 
 
 class Client():
-    def __init__(self, cert, servers):
-        self.client = HTTPClient(cert, servers)
+    def __init__(self, cacert, cert, servers):
+        self.client = HTTPClient(cacert, cert, servers)
         self.quorum = self.client.quorum
         self.servers = servers
 

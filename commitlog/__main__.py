@@ -239,9 +239,14 @@ class HTTPHandler():
 
 async def server():
     handler = HTTPHandler(dict(
-        read=read, purge=purge, promise=paxos_promise, commit=paxos_accept))
+        read=read, purge=purge,
+        promise=paxos_promise, commit=paxos_accept))
 
-    ctx = commitlog.load_cert(G.cert, ssl.Purpose.CLIENT_AUTH)
+    ctx = ssl.create_default_context(
+        cafile=G.cacert, purpose=ssl.Purpose.CLIENT_AUTH)
+    ctx.load_cert_chain(G.cert, G.cert)
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.check_hostname = False
     srv = await asyncio.start_server(handler, None, G.port, ssl=ctx)
 
     async with srv:
@@ -301,14 +306,15 @@ if '__main__' == __name__:
 
     G = argparse.ArgumentParser()
     G.add_argument('--port', help='port number for server')
-    G.add_argument('--cert', help='Self signed certificate file path')
+    G.add_argument('--cert', help='certificate path')
+    G.add_argument('--cacert', help='ca certificate path')
     G.add_argument('--servers', help='comma separated list of server ip:port')
     G.add_argument('--append', help='filename to store/read leader state')
     G.add_argument('--purge', type=int, help='purge before this seq number')
     G = G.parse_args()
 
     if G.servers:
-        G.client = commitlog.Client(G.cert, G.servers)
+        G.client = commitlog.Client(G.cacert, G.cert, G.servers)
 
     if G.port:
         asyncio.run(server())
