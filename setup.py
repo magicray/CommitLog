@@ -4,6 +4,7 @@ from distutils.core import setup
 setup(
   name='CommitLog',
   packages=['commitlog'],
+  scripts=['bin/commitlog-sign-cert']
   version=time.strftime('%Y%m%d'),
   description='General Purpose Distributed Commit Log - '
               'Replicated and Strongly Consistent',

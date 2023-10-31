@@ -8,9 +8,6 @@ from logging import critical as log
 
 
 class Server():
-    def __init__(self):
-        pass
-
     async def _handler(self, reader, writer):
         peer = None
         count = 1
@@ -21,8 +18,10 @@ class Server():
                 cert = writer.get_extra_info('peercert')
                 ctx = dict(subject=str(uuid.UUID(cert['subject'][0][0][1])))
 
-                if cert['subjectAltName'][0] != ('IP Address', peer[0]):
-                    log('IP Address mismatch {cert} {peer[0]}')
+                ip_list = [y for x, y in cert['subjectAltName']
+                           if 'IP Address' == x]
+                if peer[0] not in ip_list:
+                    log('IP Address mismatch {ip_list} {peer[0]}')
                     return writer.close()
 
                 ctx['ip'] = peer[0]

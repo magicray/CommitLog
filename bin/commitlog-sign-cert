@@ -1,0 +1,37 @@
+#!/bin/bash
+mkdir -p CA
+
+function generate_ca {
+    KEY=CA/$1.key
+    PEM=CA/$1.pem
+
+    [ ! -f $KEY ] && [ ! -f $PEM ] && openssl req -x509 -newkey rsa:4096 \
+        -nodes -sha256 -days 1000 -subj "/CN=Year-$1" -keyout $KEY -out $PEM
+}
+
+# Generate CA certificate for the current and the next year
+YEAR=$(date +%Y)
+NEXT=$((YEAR+1))
+generate_ca $YEAR
+generate_ca $NEXT
+cat CA/$YEAR.pem CA/$NEXT.pem > cacert.pem
+
+openssl x509 -in CA/$YEAR.pem -text -noout | grep 'Subject: CN'
+openssl x509 -in CA/$NEXT.pem -text -noout | grep 'Subject: CN'
+
+TMP=tmp/$(uuid) && mkdir -p $TMP
+
+# If arg is not a CSR file, assume it is CN subject and generate a CSR
+[ -f $1 ] && cp $1 $TMP/csr || {
+    openssl genrsa -out $TMP/key 2048
+    openssl req -new -key $TMP/key -out $TMP/csr -subj "/CN=$1"
+}
+
+# Create signed certificate
+openssl req -in $TMP/csr -days 200 -sha256 -out $TMP/cert \
+    -addext "subjectAltName = IP:$2"                      \
+    -CA CA/$YEAR.pem -CAkey CA/$YEAR.key
+
+# Put cert (and key) in the output file
+mkdir -p $2 && cat $TMP/cert $TMP/key > $2/$1.pem && rm -rf $TMP
+openssl x509 -in $2/$1.pem -text -noout
