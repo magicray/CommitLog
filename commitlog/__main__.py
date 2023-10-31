@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 import ssl
 import time
@@ -11,8 +10,7 @@ import asyncio
 import logging
 import argparse
 import commitlog
-import traceback
-import urllib.parse
+import commitlog.rpc
 from logging import critical as log
 
 
@@ -56,8 +54,8 @@ def dump(path, *objects):
     os.replace(tmp, path)
 
 
-async def read(log_id, log_seq, what):
-    path = seq2path(log_id, int(log_seq))
+async def read(ctx, log_seq, what):
+    path = seq2path(ctx['subject'], int(log_seq))
 
     if os.path.isfile(path):
         with open(path, 'rb') as fd:
@@ -80,10 +78,10 @@ def put_promised_seq(logdir, proposal_seq):
 
 # PROMISE - Block stale leaders and return the most recent accepted value.
 # Client will propose the most recent across servers in the accept phase
-async def paxos_promise(log_id, proposal_seq):
+async def paxos_promise(ctx, proposal_seq):
     proposal_seq = int(proposal_seq)
 
-    logdir = path_join('commitlog', log_id)
+    logdir = path_join('commitlog', ctx['subject'])
     os.makedirs(logdir, exist_ok=True)
 
     lockfd = os.open(logdir, os.O_RDONLY)
@@ -96,9 +94,9 @@ async def paxos_promise(log_id, proposal_seq):
             put_promised_seq(logdir, proposal_seq)
 
             # Paxos PROMISE response - return latest log record
-            max_seq = get_max_seq(log_id)
+            max_seq = get_max_seq(ctx['subject'])
             if max_seq > 0:
-                with open(seq2path(log_id, max_seq), 'rb') as fd:
+                with open(seq2path(ctx['subject'], max_seq), 'rb') as fd:
                     return fd.read()
 
             hdr = dict(log_seq=0, accepted_seq=0)
@@ -110,14 +108,14 @@ async def paxos_promise(log_id, proposal_seq):
 
 # ACCEPT - Client has sent the most recent value from the promise phase.
 # Stale leaders blocked. Only the most recent can reach this stage.
-async def paxos_accept(log_id, proposal_seq, log_seq, commit_id, octets):
+async def paxos_accept(ctx, proposal_seq, log_seq, commit_id, octets):
     log_seq = int(log_seq)
     proposal_seq = int(proposal_seq)
 
     if not octets or type(octets) is not bytes:
         raise Exception('INVALID_OCTETS')
 
-    logdir = path_join('commitlog', log_id)
+    logdir = path_join('commitlog', ctx['subject'])
     os.makedirs(logdir, exist_ok=True)
 
     lockfd = os.open(logdir, os.O_RDONLY)
@@ -134,9 +132,10 @@ async def paxos_accept(log_id, proposal_seq, log_seq, commit_id, octets):
         # Paxos ACCEPT response - Save octets and return success
         if proposal_seq >= promised_seq:
             hdr = dict(accepted_seq=proposal_seq, log_seq=log_seq,
-                       log_id=log_id, commit_id=commit_id, length=len(octets))
+                       log_id=ctx['subject'],
+                       commit_id=commit_id, length=len(octets))
 
-            dump(seq2path(log_id, log_seq), hdr, b'\n', octets)
+            dump(seq2path(ctx['subject'], log_seq), hdr, b'\n', octets)
 
             return hdr
     finally:
@@ -144,14 +143,14 @@ async def paxos_accept(log_id, proposal_seq, log_seq, commit_id, octets):
         os.close(lockfd)
 
 
-async def purge(log_id, log_seq):
+async def purge(ctx, log_seq):
     log_seq = int(log_seq)
 
     def sorted_dir(dirname):
         return sorted([int(f) for f in os.listdir(dirname) if f.isdigit()])
 
     count = 0
-    logdir = path_join('commitlog', log_id)
+    logdir = path_join('commitlog', ctx['subject'])
     for x in sorted_dir(logdir):
         for y in sorted_dir(path_join(logdir, x)):
             for f in sorted_dir(path_join(logdir, x, y)):
@@ -163,94 +162,6 @@ async def purge(log_id, log_seq):
 
             shutil.rmtree(path_join(logdir, x, y))
         shutil.rmtree(path_join(logdir, x))
-
-
-class HTTPHandler():
-    def __init__(self, methods):
-        self.methods = methods
-
-    async def __call__(self, reader, writer):
-        peer = None
-        count = 1
-
-        while True:
-            try:
-                peer = writer.get_extra_info('socket').getpeername()
-                cert = writer.get_extra_info('peercert')
-                log_id = str(uuid.UUID(
-                    re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
-                              cert['subject'][0][0][1])[0]))
-
-                line = await reader.readline()
-                p = line.decode().split()[1].strip('/').split('/')
-
-                method = p[0]
-                params = {k.lower(): urllib.parse.unquote(v)
-                          for k, v in zip(p[1::2], p[2::2])}
-
-                length = 0
-                while True:
-                    line = await reader.readline()
-                    line = line.strip()
-                    if not line:
-                        break
-                    k, v = line.decode().split(':', maxsplit=1)
-                    if 'content-length' == k.strip().lower():
-                        length = int(v.strip())
-
-                if length > 0:
-                    params['octets'] = await reader.readexactly(length)
-            except Exception:
-                return writer.close()
-
-            status = '400 Bad Request'
-            mime_type = 'application/octet-stream'
-
-            try:
-                res = await self.methods[method](log_id, **params)
-                if res is None:
-                    res = b''
-                else:
-                    status = '200 OK'
-
-                if type(res) is not bytes:
-                    res = json.dumps(res, indent=4, sort_keys=True).encode()
-                    mime_type = 'application/json'
-            except Exception:
-                traceback.print_exc()
-                res = traceback.format_exc().encode()
-
-            try:
-                writer.write(f'HTTP/1.1 {status}\n'.encode())
-                writer.write(f'content-length: {len(res)}\n'.encode())
-                if res:
-                    writer.write(f'content-type: {mime_type}\n\n'.encode())
-                    writer.write(res)
-                else:
-                    writer.write(b'\n')
-                await writer.drain()
-            except Exception:
-                return writer.close()
-
-            params.pop('octets', None)
-            log(f'{peer} {count} {method} {status} {params} {len(res)}')
-            count += 1
-
-
-async def server():
-    handler = HTTPHandler(dict(
-        read=read, purge=purge,
-        promise=paxos_promise, commit=paxos_accept))
-
-    ctx = ssl.create_default_context(
-        cafile=G.cacert, purpose=ssl.Purpose.CLIENT_AUTH)
-    ctx.load_cert_chain(G.cert, G.cert)
-    ctx.verify_mode = ssl.CERT_REQUIRED
-    ctx.check_hostname = False
-    srv = await asyncio.start_server(handler, None, G.port, ssl=ctx)
-
-    async with srv:
-        return await srv.serve_forever()
 
 
 async def cmd_append():
@@ -317,15 +228,15 @@ if '__main__' == __name__:
         G.client = commitlog.Client(G.cacert, G.cert, G.servers)
 
     if G.port:
-        asyncio.run(server())
+        asyncio.run(commitlog.rpc.Server().run(G.cacert, G.cert, G.port, dict(
+            read=read, purge=purge,
+            promise=paxos_promise, commit=paxos_accept)))
     elif G.append:
         asyncio.run(cmd_append())
     elif G.purge:
         log(asyncio.run(G.client.purge(G.purge)))
     else:
-        ctx = commitlog.load_cert(G.cert, ssl.Purpose.CLIENT_AUTH)
-        log_id = str(uuid.UUID(
-            re.search(r'\w{8}-\w{4}-\w{4}-\w{4}-\w{12}',
-                      ctx.get_ca_certs()[0]['subject'][0][0][1])[0]))
+        ctx = ssl.create_default_context(cafile=G.cert)
+        log_id = str(uuid.UUID(ctx.get_ca_certs()[0]['subject'][0][0][1]))
 
         asyncio.run(cmd_backup(log_id))

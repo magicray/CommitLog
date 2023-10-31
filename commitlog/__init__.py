@@ -1,100 +1,12 @@
-import ssl
 import json
 import uuid
 import time
-import asyncio
-import traceback
-
-
-def load_cert(path, purpose):
-    ctx = ssl.create_default_context(cafile=path, purpose=purpose)
-    ctx.load_cert_chain(path, path)
-    ctx.verify_mode = ssl.CERT_REQUIRED
-    ctx.check_hostname = False
-
-    return ctx
-
-
-class HTTPClient():
-    def __init__(self, cacert, cert, servers):
-        servers = [s.split(':') for s in servers.split(',')]
-
-        self.SSL = ssl.create_default_context(
-            cafile=cacert, purpose=ssl.Purpose.SERVER_AUTH)
-        self.SSL.load_cert_chain(cert, cert)
-        self.SSL.verify_mode = ssl.CERT_REQUIRED
-        self.SSL.check_hostname = False
-
-        self.conns = {(ip, int(port)): (None, None) for ip, port in servers}
-        self.quorum = int(len(self.conns)/2) + 1
-
-    async def server(self, server, resource, octets=b''):
-        status = None
-
-        try:
-            if self.conns[server][0] is None or self.conns[server][1] is None:
-                self.conns[server] = await asyncio.open_connection(
-                    server[0], server[1], ssl=self.SSL)
-
-            reader, writer = self.conns[server]
-
-            octets = octets if octets else b''
-            if type(octets) is not bytes:
-                octets = json.dumps(octets).encode()
-
-            writer.write(f'POST {resource} HTTP/1.1\n'.encode())
-            writer.write(f'content-length: {len(octets)}\n\n'.encode())
-            writer.write(octets)
-            await writer.drain()
-
-            status = await reader.readline()
-
-            length = 0
-            while True:
-                line = await reader.readline()
-                line = line.strip()
-                if not line:
-                    break
-                k, v = line.decode().split(':', maxsplit=1)
-                if 'content-length' == k.strip().lower():
-                    length = int(v.strip())
-                if 'content-type' == k.strip().lower():
-                    mime_type = v.strip()
-
-            if status.startswith(b'HTTP/1.1 200 OK') and length > 0:
-                octets = await reader.readexactly(length)
-                assert (length == len(octets))
-                if 'application/json' == mime_type:
-                    return json.loads(octets)
-                if length > 0:
-                    return octets
-        except Exception:
-            if status:
-                traceback.print_exc()
-
-            if self.conns[server][1] is not None:
-                self.conns[server][1].close()
-                self.conns[server] = None, None
-
-    async def cluster(self, resource, octets=b''):
-        servers = self.conns.keys()
-
-        res = await asyncio.gather(
-            *[self.server(s, resource, octets) for s in servers])
-
-        return {s: r for s, r in zip(servers, res) if r is not None}
-
-    def __del__(self):
-        for server, (reader, writer) in self.conns.items():
-            try:
-                writer.close()
-            except Exception:
-                pass
+import commitlog.rpc
 
 
 class Client():
     def __init__(self, cacert, cert, servers):
-        self.client = HTTPClient(cacert, cert, servers)
+        self.client = commitlog.rpc.Client(cacert, cert, servers)
         self.quorum = self.client.quorum
         self.servers = servers
 
