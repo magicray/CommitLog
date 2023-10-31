@@ -132,7 +132,7 @@ async def paxos_accept(ctx, proposal_seq, log_seq, commit_id, octets):
         # Paxos ACCEPT response - Save octets and return success
         if proposal_seq >= promised_seq:
             hdr = dict(accepted_seq=proposal_seq, log_seq=log_seq,
-                       log_id=ctx['subject'],
+                       log_id=ctx['subject'], client=ctx['ip'],
                        commit_id=commit_id, length=len(octets))
 
             dump(seq2path(ctx['subject'], log_seq), hdr, b'\n', octets)

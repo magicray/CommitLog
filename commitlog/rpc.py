@@ -7,6 +7,95 @@ import urllib.parse
 from logging import critical as log
 
 
+class Server():
+    def __init__(self):
+        pass
+
+    async def _handler(self, reader, writer):
+        peer = None
+        count = 1
+
+        while True:
+            try:
+                peer = writer.get_extra_info('socket').getpeername()
+                cert = writer.get_extra_info('peercert')
+                ctx = dict(subject=str(uuid.UUID(cert['subject'][0][0][1])))
+
+                if cert['subjectAltName'][0] != ('IP Address', peer[0]):
+                    log('IP Address mismatch {cert} {peer[0]}')
+                    return writer.close()
+
+                ctx['ip'] = peer[0]
+
+                line = await reader.readline()
+                p = line.decode().split()[1].strip('/').split('/')
+
+                method = p[0]
+                params = {k.lower(): urllib.parse.unquote(v)
+                          for k, v in zip(p[1::2], p[2::2])}
+
+                length = 0
+                while True:
+                    line = await reader.readline()
+                    line = line.strip()
+                    if not line:
+                        break
+                    k, v = line.decode().split(':', maxsplit=1)
+                    if 'content-length' == k.strip().lower():
+                        length = int(v.strip())
+
+                if length > 0:
+                    params['octets'] = await reader.readexactly(length)
+            except Exception:
+                return writer.close()
+
+            status = '400 Bad Request'
+            mime_type = 'application/octet-stream'
+
+            try:
+                res = await self.methods[method](ctx, **params)
+                if res is None:
+                    res = b''
+                else:
+                    status = '200 OK'
+
+                if type(res) is not bytes:
+                    res = json.dumps(res, indent=4, sort_keys=True).encode()
+                    mime_type = 'application/json'
+            except Exception:
+                traceback.print_exc()
+                res = traceback.format_exc().encode()
+
+            try:
+                writer.write(f'HTTP/1.1 {status}\n'.encode())
+                writer.write(f'content-length: {len(res)}\n'.encode())
+                if res:
+                    writer.write(f'content-type: {mime_type}\n\n'.encode())
+                    writer.write(res)
+                else:
+                    writer.write(b'\n')
+                await writer.drain()
+            except Exception:
+                return writer.close()
+
+            params.pop('octets', None)
+            log(f'{peer} {count} {method} {status} {params} {len(res)}')
+            count += 1
+
+    async def run(self, cacert, cert, port, methods):
+        self.methods = methods
+
+        ctx = ssl.create_default_context(
+            cafile=cacert, purpose=ssl.Purpose.CLIENT_AUTH)
+        ctx.load_cert_chain(cert, cert)
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.check_hostname = True
+
+        srv = await asyncio.start_server(self._handler, None, port, ssl=ctx)
+        async with srv:
+            return await srv.serve_forever()
+
+
 class Client():
     def __init__(self, cacert, cert, servers):
         servers = [s.split(':') for s in servers.split(',')]
@@ -82,86 +171,3 @@ class Client():
                 writer.close()
             except Exception:
                 pass
-
-
-class Server():
-    def __init__(self):
-        pass
-
-    async def _handler(self, reader, writer):
-        peer = None
-        count = 1
-
-        while True:
-            try:
-                peer = writer.get_extra_info('socket').getpeername()
-                cert = writer.get_extra_info('peercert')
-                ctx = dict(subject=str(uuid.UUID(cert['subject'][0][0][1])))
-
-                line = await reader.readline()
-                p = line.decode().split()[1].strip('/').split('/')
-
-                method = p[0]
-                params = {k.lower(): urllib.parse.unquote(v)
-                          for k, v in zip(p[1::2], p[2::2])}
-
-                length = 0
-                while True:
-                    line = await reader.readline()
-                    line = line.strip()
-                    if not line:
-                        break
-                    k, v = line.decode().split(':', maxsplit=1)
-                    if 'content-length' == k.strip().lower():
-                        length = int(v.strip())
-
-                if length > 0:
-                    params['octets'] = await reader.readexactly(length)
-            except Exception:
-                return writer.close()
-
-            status = '400 Bad Request'
-            mime_type = 'application/octet-stream'
-
-            try:
-                res = await self.methods[method](ctx, **params)
-                if res is None:
-                    res = b''
-                else:
-                    status = '200 OK'
-
-                if type(res) is not bytes:
-                    res = json.dumps(res, indent=4, sort_keys=True).encode()
-                    mime_type = 'application/json'
-            except Exception:
-                traceback.print_exc()
-                res = traceback.format_exc().encode()
-
-            try:
-                writer.write(f'HTTP/1.1 {status}\n'.encode())
-                writer.write(f'content-length: {len(res)}\n'.encode())
-                if res:
-                    writer.write(f'content-type: {mime_type}\n\n'.encode())
-                    writer.write(res)
-                else:
-                    writer.write(b'\n')
-                await writer.drain()
-            except Exception:
-                return writer.close()
-
-            params.pop('octets', None)
-            log(f'{peer} {count} {method} {status} {params} {len(res)}')
-            count += 1
-
-    async def run(self, cacert, cert, port, methods):
-        self.methods = methods
-
-        ctx = ssl.create_default_context(
-            cafile=cacert, purpose=ssl.Purpose.CLIENT_AUTH)
-        ctx.load_cert_chain(cert, cert)
-        ctx.verify_mode = ssl.CERT_REQUIRED
-        ctx.check_hostname = True
-
-        srv = await asyncio.start_server(self._handler, None, port, ssl=ctx)
-        async with srv:
-            return await srv.serve_forever()
