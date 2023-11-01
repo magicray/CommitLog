@@ -10,15 +10,12 @@ class Client():
         self.quorum = self.client.quorum
         self.servers = servers
 
-        self.log_seq = self.proposal_seq = None
+    def init(self, proposal_seq, log_seq):
+        self.log_seq = log_seq
+        self.proposal_seq = proposal_seq
 
     # PAXOS Client
-    async def reset_leader(self, proposal_seq=None, log_seq=None):
-        if proposal_seq is not None and log_seq is not None:
-            self.log_seq = log_seq
-            self.proposal_seq = proposal_seq
-            return dict(proposal_seq=self.proposal_seq, log_seq=self.log_seq)
-
+    async def reset(self):
         self.proposal_seq = self.log_seq = None
         proposal_seq = int(time.strftime('%Y%m%d%H%M%S'))
 
@@ -28,9 +25,9 @@ class Client():
         if self.quorum > len(res):
             return
 
-        hdrs = set(res.values())
-        if 1 == len(hdrs):
-            header = hdrs.pop().split(b'\n', maxsplit=1)[0]
+        vals = set(res.values())
+        if 1 == len(vals):
+            header = vals.pop().split(b'\n', maxsplit=1)[0]
             self.log_seq = json.loads(header)['log_seq']
             self.proposal_seq = proposal_seq
             return dict(proposal_seq=self.proposal_seq, log_seq=self.log_seq)
@@ -56,28 +53,23 @@ class Client():
             return
 
         # Paxos ACCEPT phase - re-write the last blob to sync all the nodes
+        self.log_seq = log_seq - 1
+        self.proposal_seq = proposal_seq
+        return await self.append(octets, commit_id)
+
+    async def append(self, octets, commit_id=None):
+        proposal_seq, log_seq = self.proposal_seq, self.log_seq + 1
+        self.proposal_seq = self.log_seq = None
+
+        commit_id = commit_id if commit_id else str(uuid.uuid4())
+
         url = f'/commit/proposal_seq/{proposal_seq}'
         url += f'/log_seq/{log_seq}/commit_id/{commit_id}'
         vlist = list((await self.client.cluster(url, octets)).values())
 
         if len(vlist) >= self.quorum and all([vlist[0] == v for v in vlist]):
-            self.log_seq = vlist[0]['log_seq']
-            self.proposal_seq = proposal_seq
-            return dict(proposal_seq=self.proposal_seq, log_seq=self.log_seq)
-
-    async def append(self, octets):
-        proposal_seq, log_seq = self.proposal_seq, self.log_seq + 1
-        self.proposal_seq = self.log_seq = None
-
-        url = f'/commit/proposal_seq/{proposal_seq}'
-        url += f'/log_seq/{log_seq}/commit_id/{uuid.uuid4()}'
-        values = list((await self.client.cluster(url, octets)).values())
-
-        if len(values) >= self.quorum:
-            if all([values[0] == v for v in values]):
-                self.proposal_seq, self.log_seq = proposal_seq, log_seq
-
-                return values[0]
+            self.proposal_seq, self.log_seq = proposal_seq, log_seq
+            return vlist[0]
 
     async def tail(self, log_seq):
         url = f'/read/log_seq/{log_seq}/what/header'

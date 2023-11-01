@@ -168,15 +168,15 @@ async def cmd_append():
     ts = time.time()
 
     if not os.path.isfile(G.append):
-        obj = await G.client.reset_leader()
+        obj = await G.client.reset()
     else:
         with open(G.append) as fd:
             obj = json.load(fd)
         os.remove(G.append)
-        obj = await G.client.reset_leader(obj['proposal_seq'], obj['log_seq'])
+        G.client.init(obj['proposal_seq'], obj['log_seq'])
 
     if obj is None:
-        log('reset_leader failed')
+        log('reset failed')
         exit(1)
 
     result = await G.client.append(sys.stdin.buffer.read())
