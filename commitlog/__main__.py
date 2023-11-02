@@ -72,16 +72,17 @@ def get_promised_seq(logdir):
     return 0
 
 
-def put_promised_seq(logdir, proposal_seq):
-    dump(path_join(logdir, 'promised'), dict(promised_seq=proposal_seq))
+def put_promised_seq(logdir, seq):
+    dump(path_join(logdir, 'promised'), dict(promised_seq=seq))
 
 
 # PROMISE - Block stale leaders and return the most recent accepted value.
 # Client will propose the most recent across servers in the accept phase
 async def paxos_promise(ctx, proposal_seq):
+    log_id = ctx['subject']
+    logdir = path_join('commitlog', log_id)
     proposal_seq = int(proposal_seq)
 
-    logdir = path_join('commitlog', ctx['subject'])
     os.makedirs(logdir, exist_ok=True)
 
     lockfd = os.open(logdir, os.O_RDONLY)
@@ -94,9 +95,9 @@ async def paxos_promise(ctx, proposal_seq):
             put_promised_seq(logdir, proposal_seq)
 
             # Paxos PROMISE response - return latest log record
-            max_seq = get_max_seq(ctx['subject'])
+            max_seq = get_max_seq(log_id)
             if max_seq > 0:
-                with open(seq2path(ctx['subject'], max_seq), 'rb') as fd:
+                with open(seq2path(log_id, max_seq), 'rb') as fd:
                     return fd.read()
 
             hdr = dict(log_seq=0, accepted_seq=0)
@@ -109,13 +110,14 @@ async def paxos_promise(ctx, proposal_seq):
 # ACCEPT - Client has sent the most recent value from the promise phase.
 # Stale leaders blocked. Only the most recent can reach this stage.
 async def paxos_accept(ctx, proposal_seq, log_seq, commit_id, octets):
+    log_id = ctx['subject']
+    logdir = path_join('commitlog', log_id)
     log_seq = int(log_seq)
     proposal_seq = int(proposal_seq)
 
     if not octets or type(octets) is not bytes:
         raise Exception('INVALID_OCTETS')
 
-    logdir = path_join('commitlog', ctx['subject'])
     os.makedirs(logdir, exist_ok=True)
 
     lockfd = os.open(logdir, os.O_RDONLY)
@@ -132,10 +134,9 @@ async def paxos_accept(ctx, proposal_seq, log_seq, commit_id, octets):
         # Paxos ACCEPT response - Save octets and return success
         if proposal_seq >= promised_seq:
             hdr = dict(accepted_seq=proposal_seq, log_seq=log_seq,
-                       log_id=ctx['subject'],
-                       commit_id=commit_id, length=len(octets))
+                       log_id=log_id, commit_id=commit_id, length=len(octets))
 
-            dump(seq2path(ctx['subject'], log_seq), hdr, b'\n', octets)
+            dump(seq2path(log_id, log_seq), hdr, b'\n', octets)
 
             return hdr
     finally:
@@ -144,13 +145,14 @@ async def paxos_accept(ctx, proposal_seq, log_seq, commit_id, octets):
 
 
 async def purge(ctx, log_seq):
+    log_id = ctx['subject']
+    logdir = path_join('commitlog', log_id)
     log_seq = int(log_seq)
 
     def sorted_dir(dirname):
         return sorted([int(f) for f in os.listdir(dirname) if f.isdigit()])
 
     count = 0
-    logdir = path_join('commitlog', ctx['subject'])
     for x in sorted_dir(logdir):
         for y in sorted_dir(path_join(logdir, x)):
             for f in sorted_dir(path_join(logdir, x, y)):
@@ -184,21 +186,24 @@ async def cmd_append():
         log('commit failed')
         exit(1)
 
-    obj['log_seq'] = result['log_seq']
-    result['msec'] = int((time.time() - ts) * 1000)
+    obj.update(result)
+    obj['msec'] = int((time.time() - ts) * 1000)
     dump(G.append, obj)
-    log(result)
+    log(obj)
 
 
 async def cmd_backup(log_id):
     os.makedirs(path_join('commitlog', log_id), exist_ok=True)
 
     seq = get_max_seq(log_id) + 1
+    delay = 1
 
     while True:
         result = await G.client.tail(seq)
         if not result:
-            await asyncio.sleep(1)
+            # exponential backoff
+            await asyncio.sleep(delay)
+            delay = min(32, 2*delay)
             continue
 
         hdr, octets = result
@@ -210,6 +215,7 @@ async def cmd_backup(log_id):
             log(fd.readline().strip())
 
         seq += 1
+        delay = 1
 
 
 if '__main__' == __name__:
