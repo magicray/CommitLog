@@ -25,32 +25,44 @@ class Client():
         if self.quorum > len(res):
             return
 
-        vals = set(res.values())
+        vals = set([json.dumps(v, sort_keys=True) for v in res.values()])
         if 1 == len(vals):
-            header = vals.pop().split(b'\n', maxsplit=1)[0]
-            self.log_seq = json.loads(header)['log_seq']
+            self.log_seq = json.loads(vals.pop())['log_seq']
             self.proposal_seq = proposal_seq
             return dict(proposal_seq=self.proposal_seq, log_seq=self.log_seq)
 
         # CRUX of the paxos protocol - Find the most recent log_seq with most
         # recent accepted_seq. Only this value should be proposed
+        srv = None
         log_seq = accepted_seq = 0
         commit_id = str(uuid.uuid4())
-        for val in res.values():
-            header, body = val.split(b'\n', maxsplit=1)
-            header = json.loads(header)
-
+        for k, v in res.items():
             old = log_seq, accepted_seq
-            new = header['log_seq'], header['accepted_seq']
+            new = v['log_seq'], v['accepted_seq']
 
             if new > old:
-                octets = body
-                log_seq = header['log_seq']
-                commit_id = header['commit_id']
-                accepted_seq = header['accepted_seq']
+                srv = k
+                log_seq = v['log_seq']
+                commit_id = v['commit_id']
+                accepted_seq = v['accepted_seq']
 
-        if 0 == log_seq or not octets:
+        if 0 == log_seq:
             return
+
+        # Found the location of the most recent log record
+        # NowfFetch the octets from the server
+        url = f'/read/log_seq/{log_seq}/what/body'
+        result = await self.client.server(srv, url)
+        if not result:
+            return
+
+        hdr, octets = result.split(b'\n', maxsplit=1)
+        hdr = json.loads(hdr)
+
+        assert (hdr['length'] == len(octets))
+        assert (hdr['log_seq'] == log_seq)
+        assert (hdr['commit_id'] == commit_id)
+        assert (hdr['accepted_seq'] == accepted_seq)
 
         # Paxos ACCEPT phase - re-write the last blob to sync all the nodes
         self.log_seq = log_seq - 1

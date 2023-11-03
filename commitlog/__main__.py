@@ -98,10 +98,9 @@ async def paxos_promise(ctx, proposal_seq):
             max_seq = get_max_seq(log_id)
             if max_seq > 0:
                 with open(seq2path(log_id, max_seq), 'rb') as fd:
-                    return fd.read()
+                    return json.loads(fd.readline())
 
-            hdr = dict(log_seq=0, accepted_seq=0)
-            return json.dumps(hdr, sort_keys=True).encode() + b'\n'
+            return dict(log_seq=0, accepted_seq=0)
     finally:
         os.sync()
         os.close(lockfd)
@@ -187,6 +186,7 @@ async def cmd_append():
         exit(1)
 
     obj.update(result)
+    obj['proposal_seq'] = obj['accepted_seq']
     obj['msec'] = int((time.time() - ts) * 1000)
     dump(G.append, obj)
     log(obj)
