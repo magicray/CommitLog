@@ -35,7 +35,7 @@ class Client():
         # recent accepted_seq. Only this value should be proposed
         srv = None
         log_seq = accepted_seq = 0
-        commit_id = str(uuid.uuid4())
+        commit_id = None
         for k, v in res.items():
             old = log_seq, accepted_seq
             new = v['log_seq'], v['accepted_seq']
@@ -50,7 +50,7 @@ class Client():
             return
 
         # Found the location of the most recent log record
-        # NowfFetch the octets from the server
+        # Now fetch the octets from the server
         url = f'/read/log_seq/{log_seq}/what/body'
         result = await self.client.server(srv, url)
         if not result:
@@ -99,16 +99,13 @@ class Client():
         if not all([hdrs[0][1] == h[1] for h in hdrs[:self.quorum]]):
             return
 
-        try:
-            url = f'/read/log_seq/{log_seq}/what/body'
-            result = await self.client.server(hdrs[0][2], url)
-            if not result:
-                return
-        except Exception:
+        url = f'/read/log_seq/{log_seq}/what/body'
+        result = await self.client.server(hdrs[0][2], url)
+        if not result:
             return
 
-        header, octets = result.split(b'\n', maxsplit=1)
-        hdr = json.loads(header)
+        hdr, octets = result.split(b'\n', maxsplit=1)
+        hdr = json.loads(hdr)
         hdr.pop('accepted_seq')
 
         assert (hdr['length'] == len(octets))
