@@ -4,9 +4,21 @@ import time
 import commitlog.rpc
 
 
+class RPCClient(commitlog.rpc.Client):
+    def __init__(self, cacert, cert, servers):
+        super().__init__(cacert, cert, servers)
+
+    async def filtered(self, resource, octets=b''):
+        res = await self.cluster(resource, octets)
+
+        servers = self.conns.keys()
+        return {s: r for s, r in zip(servers, res)
+                if r and type(r) in (bytes, dict, list, int, float, str)}
+
+
 class Client():
     def __init__(self, cacert, cert, servers):
-        self.client = commitlog.rpc.Client(cacert, cert, servers)
+        self.client = RPCClient(cacert, cert, servers)
         self.quorum = self.client.quorum
         self.servers = servers
 
@@ -21,9 +33,9 @@ class Client():
 
         # Paxos PROMISE phase - block stale leaders from writing
         url = f'/promise/proposal_seq/{proposal_seq}'
-        res = await self.client.cluster(url)
+        res = await self.client.filtered(url)
         if self.quorum > len(res):
-            return
+            raise Exception('NO_QUORUM')
 
         vals = set([json.dumps(v, sort_keys=True) for v in res.values()])
         if 1 == len(vals):
@@ -35,7 +47,7 @@ class Client():
         # recent accepted_seq. Only this value should be proposed
         srv = None
         log_seq = accepted_seq = 0
-        commit_id = None
+        commit_id = ''
         for k, v in res.items():
             old = log_seq, accepted_seq
             new = v['log_seq'], v['accepted_seq']
@@ -47,14 +59,14 @@ class Client():
                 accepted_seq = v['accepted_seq']
 
         if 0 == log_seq:
-            return
+            raise Exception('LAST_RECORD_NOT_FOUND')
 
         # Found the location of the most recent log record
         # Now fetch the octets from the server
         url = f'/read/log_seq/{log_seq}/what/body'
         result = await self.client.server(srv, url)
         if not result:
-            return
+            raise Exception('LAST_RECORD_NOT_FETCHED')
 
         hdr, octets = result.split(b'\n', maxsplit=1)
         hdr = json.loads(hdr)
@@ -77,17 +89,23 @@ class Client():
 
         url = f'/commit/proposal_seq/{proposal_seq}'
         url += f'/log_seq/{log_seq}/commit_id/{commit_id}'
-        vlist = list((await self.client.cluster(url, octets)).values())
+        vlist = list((await self.client.filtered(url, octets)).values())
 
-        if len(vlist) >= self.quorum and all([vlist[0] == v for v in vlist]):
-            self.proposal_seq, self.log_seq = proposal_seq, log_seq
-            return vlist[0]
+        if self.quorum > len(vlist):
+            raise Exception('NO_QUORUM')
+
+        if not all([vlist[0] == v for v in vlist]):
+            raise Exception('INCONSISTENT_WRITE')
+
+        self.log_seq = log_seq
+        self.proposal_seq = proposal_seq
+        return vlist[0]
 
     async def tail(self, log_seq):
         url = f'/read/log_seq/{log_seq}/what/header'
-        res = await self.client.cluster(url)
+        res = await self.client.filtered(url)
         if self.quorum > len(res):
-            return
+            raise Exception('NO_QUORUM')
 
         hdrs = list()
         for k, v in res.items():
@@ -97,12 +115,10 @@ class Client():
 
         hdrs = sorted(hdrs, reverse=True)
         if not all([hdrs[0][1] == h[1] for h in hdrs[:self.quorum]]):
-            return
+            raise Exception('NOT_FOUND')
 
         url = f'/read/log_seq/{log_seq}/what/body'
         result = await self.client.server(hdrs[0][2], url)
-        if not result:
-            return
 
         hdr, octets = result.split(b'\n', maxsplit=1)
         hdr = json.loads(hdr)
@@ -114,4 +130,4 @@ class Client():
         return hdr, octets
 
     async def purge(self, log_seq):
-        return await self.client.cluster(f'/purge/log_seq/{log_seq}')
+        return await self.client.filtered(f'/purge/log_seq/{log_seq}')

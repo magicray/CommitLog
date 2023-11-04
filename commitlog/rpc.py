@@ -15,17 +15,19 @@ class Server():
         while True:
             try:
                 peer = writer.get_extra_info('socket').getpeername()
+                ctx = dict(ip=peer[0])
+
                 cert = writer.get_extra_info('peercert')
-                ctx = dict(subject=str(uuid.UUID(cert['subject'][0][0][1])))
+                ctx['subject'] = str(uuid.UUID(cert['subject'][0][0][1]))
 
                 ip_list = [y for x, y in cert['subjectAltName']
                            if 'IP Address' == x]
-                if peer[0] not in ip_list:
-                    log('IP Address mismatch {ip_list} {peer[0]}')
-                    return writer.close()
+                if ctx['ip'] not in ip_list:
+                    log('IP Address mismatch {ip_list} {ctx}')
+            except Exception:
+                pass
 
-                ctx['ip'] = peer[0]
-
+            try:
                 line = await reader.readline()
                 p = line.decode().split()[1].strip('/').split('/')
 
@@ -48,16 +50,15 @@ class Server():
             except Exception:
                 return writer.close()
 
-            status = '400 Bad Request'
+            status = '500 Internal Server Error'
             mime_type = 'application/octet-stream'
 
             try:
                 res = await self.methods[method](ctx, **params)
-                if res is None:
-                    res = b''
-                else:
-                    status = '200 OK'
+                if not res:
+                    raise Exception('EMPTY_RESPONSE_FROM_REMOTE_PROCEDURE')
 
+                status = '200 OK'
                 if type(res) is not bytes:
                     res = json.dumps(res, indent=4, sort_keys=True).encode()
                     mime_type = 'application/json'
@@ -87,7 +88,7 @@ class Server():
         ctx = ssl.create_default_context(
             cafile=cacert, purpose=ssl.Purpose.CLIENT_AUTH)
         ctx.load_cert_chain(cert, cert)
-        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.verify_mode = ssl.CERT_OPTIONAL
         ctx.check_hostname = True
 
         srv = await asyncio.start_server(self._handler, None, port, ssl=ctx)
@@ -141,28 +142,30 @@ class Client():
                 if 'content-type' == k.strip().lower():
                     mime_type = v.strip()
 
-            if status.startswith(b'HTTP/1.1 200 OK') and length > 0:
+            octets = b''
+            if length > 0:
                 octets = await reader.readexactly(length)
                 assert (length == len(octets))
+
+            if status.startswith(b'HTTP/1.1 200 OK'):
                 if 'application/json' == mime_type:
                     return json.loads(octets)
-                if length > 0:
-                    return octets
-        except Exception:
-            if status:
-                traceback.print_exc()
+                return octets
 
+            raise Exception(octets.decode())
+        except Exception:
             if self.conns[server][1] is not None:
                 self.conns[server][1].close()
                 self.conns[server] = None, None
 
+            raise
+
     async def cluster(self, resource, octets=b''):
         servers = self.conns.keys()
 
-        res = await asyncio.gather(
-            *[self.server(s, resource, octets) for s in servers])
-
-        return {s: r for s, r in zip(servers, res) if r is not None}
+        return await asyncio.gather(
+            *[self.server(s, resource, octets) for s in servers],
+            return_exceptions=True)
 
     def __del__(self):
         for server, (reader, writer) in self.conns.items():

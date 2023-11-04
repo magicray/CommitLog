@@ -199,23 +199,24 @@ async def cmd_backup(log_id):
     delay = 1
 
     while True:
-        result = await G.client.tail(seq)
-        if not result:
+        try:
+            hdr, octets = await G.client.tail(seq)
+
+            path = seq2path(log_id, seq)
+            dump(path, hdr, b'\n', octets)
+
+            with open(path) as fd:
+                log(fd.readline().strip())
+
+            seq += 1
+            delay = 1
+        except Exception as e:
+            log(e)
+            log(f'waiting for {delay} seconds')
+
             # exponential backoff
             await asyncio.sleep(delay)
-            delay = min(32, 2*delay)
-            continue
-
-        hdr, octets = result
-
-        path = seq2path(log_id, seq)
-        dump(path, hdr, b'\n', octets)
-
-        with open(path) as fd:
-            log(fd.readline().strip())
-
-        seq += 1
-        delay = 1
+            delay = min(60, 2*delay)
 
 
 if '__main__' == __name__:
