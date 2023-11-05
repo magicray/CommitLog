@@ -176,9 +176,8 @@ async def cmd_append():
         os.remove(G.append)
         G.client.init(obj['proposal_seq'], obj['log_seq'])
 
-    result = await G.client.append(sys.stdin.buffer.read())
+    obj.update(await G.client.append(sys.stdin.buffer.read()))
 
-    obj.update(result)
     obj['proposal_seq'] = obj['accepted_seq']
     obj['msec'] = int((time.time() - ts) * 1000)
     dump(G.append, obj)
@@ -206,8 +205,6 @@ async def cmd_backup(log_id):
             delay = 1
         except Exception as e:
             log(f'waiting for {delay} seconds - seq({seq}) exception({e})')
-
-            # exponential backoff
             await asyncio.sleep(delay)
             delay = min(60, 2*delay)
 
