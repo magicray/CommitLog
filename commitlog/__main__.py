@@ -176,19 +176,13 @@ async def cmd_append():
         os.remove(G.append)
         G.client.init(obj['proposal_seq'], obj['log_seq'])
 
-    if obj is None:
-        log('reset failed')
-        exit(1)
-
     result = await G.client.append(sys.stdin.buffer.read())
-    if not result:
-        log('commit failed')
-        exit(1)
 
     obj.update(result)
     obj['proposal_seq'] = obj['accepted_seq']
     obj['msec'] = int((time.time() - ts) * 1000)
     dump(G.append, obj)
+
     log(obj)
 
 
@@ -211,8 +205,7 @@ async def cmd_backup(log_id):
             seq += 1
             delay = 1
         except Exception as e:
-            log(e)
-            log(f'waiting for {delay} seconds')
+            log(f'exception({e}) - waiting for {delay} seconds')
 
             # exponential backoff
             await asyncio.sleep(delay)
@@ -239,7 +232,11 @@ if '__main__' == __name__:
             read=read, purge=purge,
             promise=paxos_promise, commit=paxos_accept)))
     elif G.append:
-        asyncio.run(cmd_append())
+        try:
+            asyncio.run(cmd_append())
+        except Exception as e:
+            log(e)
+            exit(1)
     elif G.purge:
         log(asyncio.run(G.client.purge(G.purge)))
     else:

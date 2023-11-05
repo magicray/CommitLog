@@ -13,7 +13,7 @@ class RPCClient(commitlog.rpc.Client):
 
         servers = self.conns.keys()
         return {s: r for s, r in zip(servers, res)
-                if r and type(r) in (bytes, dict, list, int, float, str)}
+                if type(r) in (bytes, dict, list, int, float, str, bool)}
 
 
 class Client():
