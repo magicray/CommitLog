@@ -55,13 +55,12 @@ class Server():
 
             try:
                 res = await self.methods[method](ctx, **params)
-                if not res:
-                    raise Exception('EMPTY_RESPONSE_FROM_REMOTE_PROCEDURE')
 
-                status = '200 OK'
                 if type(res) is not bytes:
                     res = json.dumps(res, indent=4, sort_keys=True).encode()
                     mime_type = 'application/json'
+
+                status = '200 OK'
             except Exception:
                 traceback.print_exc()
                 res = traceback.format_exc().encode()
@@ -156,8 +155,8 @@ class Client():
         except Exception:
             if self.conns[server][1] is not None:
                 self.conns[server][1].close()
-                self.conns[server] = None, None
 
+            self.conns[server] = None, None
             raise
 
     async def cluster(self, resource, octets=b''):

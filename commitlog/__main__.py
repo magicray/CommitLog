@@ -205,7 +205,7 @@ async def cmd_backup(log_id):
             seq += 1
             delay = 1
         except Exception as e:
-            log(f'exception({e}) - waiting for {delay} seconds')
+            log(f'waiting for {delay} seconds - seq({seq}) exception({e})')
 
             # exponential backoff
             await asyncio.sleep(delay)

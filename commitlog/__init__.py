@@ -10,10 +10,13 @@ class RPCClient(commitlog.rpc.Client):
 
     async def filtered(self, resource, octets=b''):
         res = await self.cluster(resource, octets)
+        result = dict()
 
-        servers = self.conns.keys()
-        return {s: r for s, r in zip(servers, res)
-                if type(r) in (bytes, dict, list, int, float, str, bool)}
+        for s, r in zip(self.conns.keys(), res):
+            if r and type(r) in (bytes, str, bool, int, float, list, dict):
+                result[s] = r
+
+        return result
 
 
 class Client():
