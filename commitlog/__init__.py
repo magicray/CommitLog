@@ -112,25 +112,29 @@ class Client():
 
         hdrs = list()
         for k, v in res.items():
-            hdrs.append((v.pop('accepted_seq'),          # accepted seq
-                         json.dumps(v, sort_keys=True),  # header
-                         k))                             # server
+            # accepted_seq, header, server
+            hdrs.append((v.pop('accepted_seq'), v, k))
 
         hdrs = sorted(hdrs, reverse=True)
-        if not all([hdrs[0][1] == h[1] for h in hdrs[:self.quorum]]):
-            raise Exception('NOT_FOUND')
-
         url = f'/read/log_seq/{log_seq}/what/body'
         result = await self.client.server(hdrs[0][2], url)
 
         hdr, octets = result.split(b'\n', maxsplit=1)
         hdr = json.loads(hdr)
-        hdr.pop('accepted_seq')
 
         assert (hdr['length'] == len(octets))
-        assert (hdrs[0][1] == json.dumps(hdr, sort_keys=True))
+        assert (hdr['log_seq'] == hdrs[0][1]['log_seq'])
+        assert (hdr['commit_id'] == hdrs[0][1]['commit_id'])
+        assert (hdr['accepted_seq'] == hdrs[0][0])
 
         return hdr, octets
+
+    async def max_seq(self):
+        res = await self.client.filtered('/max_seq')
+        if self.quorum > len(res):
+            raise Exception('NO_QUORUM')
+
+        return max(res.values())
 
     async def purge(self, log_seq):
         return await self.client.filtered(f'/purge/log_seq/{log_seq}')

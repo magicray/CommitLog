@@ -39,6 +39,12 @@ def get_max_seq(log_id):
     return 0
 
 
+async def rpc_max_seq(ctx):
+    log_id = ctx['subject']
+
+    return get_max_seq(log_id)
+
+
 def dump(path, *objects):
     path = os.path.abspath(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -55,11 +61,14 @@ def dump(path, *objects):
 
 
 async def read(ctx, log_seq, what):
-    path = seq2path(ctx['subject'], int(log_seq))
+    log_id = ctx['subject']
+    path = seq2path(log_id, int(log_seq))
 
     if os.path.isfile(path):
         with open(path, 'rb') as fd:
             return fd.read() if 'body' == what else json.loads(fd.readline())
+    elif 'header' == what:
+        return dict(accepted_seq=0)
 
 
 def get_promised_seq(logdir):
@@ -190,9 +199,15 @@ async def cmd_backup(log_id):
 
     seq = get_max_seq(log_id) + 1
     delay = 1
+    max_seq = 0
 
     while True:
         try:
+            if seq >= max_seq:
+                max_seq = await G.client.max_seq()
+                if seq >= max_seq:
+                    raise Exception('SEQ_OUT_OF_RANGE')
+
             hdr, octets = await G.client.tail(seq)
 
             path = seq2path(log_id, seq)
@@ -204,7 +219,7 @@ async def cmd_backup(log_id):
             seq += 1
             delay = 1
         except Exception as e:
-            log(f'waiting for {delay} seconds - seq({seq}) exception({e})')
+            log(f'wait({delay}) - seq({seq}) max({max_seq}) exception({e})')
             await asyncio.sleep(delay)
             delay = min(60, 2*delay)
 
@@ -226,7 +241,7 @@ if '__main__' == __name__:
 
     if G.port:
         asyncio.run(commitlog.rpc.Server().run(G.cacert, G.cert, G.port, dict(
-            read=read, purge=purge,
+            read=read, purge=purge, max_seq=rpc_max_seq,
             promise=paxos_promise, commit=paxos_accept)))
     elif G.append:
         try:
