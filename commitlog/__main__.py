@@ -92,6 +92,9 @@ async def paxos_promise(ctx, proposal_seq):
     logdir = path_join('commitlog', log_id)
     proposal_seq = int(proposal_seq)
 
+    if proposal_seq-10 > int(time.strftime('%Y%m%d%H%M%S')) > proposal_seq+10:
+        raise Exception('CLOCKS_OUT_OF_SYNC')
+
     os.makedirs(logdir, exist_ok=True)
 
     lockfd = os.open(logdir, os.O_RDONLY)
@@ -175,23 +178,8 @@ async def purge(ctx, log_seq):
 
 
 async def cmd_append():
-    ts = time.time()
-
-    if not os.path.isfile(G.append):
-        obj = await G.client.reset()
-    else:
-        with open(G.append) as fd:
-            obj = json.load(fd)
-        os.remove(G.append)
-        G.client.init(obj['proposal_seq'], obj['log_seq'])
-
-    obj.update(await G.client.append(sys.stdin.buffer.read()))
-
-    obj['proposal_seq'] = obj['accepted_seq']
-    obj['msec'] = int((time.time() - ts) * 1000)
-    dump(G.append, obj)
-
-    log(obj)
+    await G.client.reset()
+    log(await G.client.append(sys.stdin.buffer.read()))
 
 
 async def cmd_backup(log_id):
@@ -209,12 +197,8 @@ async def cmd_backup(log_id):
                     raise Exception('SEQ_OUT_OF_RANGE')
 
             hdr, octets = await G.client.tail(seq)
-
-            path = seq2path(log_id, seq)
-            dump(path, hdr, b'\n', octets)
-
-            with open(path) as fd:
-                log(fd.readline().strip())
+            dump(seq2path(log_id, seq), hdr, b'\n', octets)
+            log(hdr)
 
             seq += 1
             delay = 1
@@ -232,27 +216,26 @@ if '__main__' == __name__:
     G.add_argument('--cert', help='certificate path')
     G.add_argument('--cacert', help='ca certificate path')
     G.add_argument('--servers', help='comma separated list of server ip:port')
-    G.add_argument('--append', help='filename to store/read leader state')
+    G.add_argument('--backup', help='backup directory')
     G.add_argument('--purge', type=int, help='purge before this seq number')
     G = G.parse_args()
 
     if G.servers:
         G.client = commitlog.Client(G.cacert, G.cert, G.servers)
+        ctx = ssl.create_default_context(cafile=G.cert)
+        log_id = str(uuid.UUID(ctx.get_ca_certs()[0]['subject'][0][0][1]))
 
     if G.port:
         asyncio.run(commitlog.rpc.Server().run(G.cacert, G.cert, G.port, dict(
             read=read, purge=purge, max_seq=rpc_max_seq,
             promise=paxos_promise, commit=paxos_accept)))
-    elif G.append:
+    elif G.purge:
+        log(asyncio.run(G.client.purge(G.purge)))
+    elif G.backup:
+        asyncio.run(cmd_backup(log_id))
+    else:
         try:
             asyncio.run(cmd_append())
         except Exception as e:
             log(e)
             exit(1)
-    elif G.purge:
-        log(asyncio.run(G.client.purge(G.purge)))
-    else:
-        ctx = ssl.create_default_context(cafile=G.cert)
-        log_id = str(uuid.UUID(ctx.get_ca_certs()[0]['subject'][0][0][1]))
-
-        asyncio.run(cmd_backup(log_id))

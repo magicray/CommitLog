@@ -25,10 +25,6 @@ class Client():
         self.quorum = self.client.quorum
         self.servers = servers
 
-    def init(self, proposal_seq, log_seq):
-        self.log_seq = log_seq
-        self.proposal_seq = proposal_seq
-
     # PAXOS Client
     async def reset(self):
         self.proposal_seq = self.log_seq = None
@@ -40,17 +36,10 @@ class Client():
         if self.quorum > len(res):
             raise Exception('NO_QUORUM')
 
-        vals = set([json.dumps(v, sort_keys=True) for v in res.values()])
-        if 1 == len(vals):
-            self.log_seq = json.loads(vals.pop())['log_seq']
-            self.proposal_seq = proposal_seq
-            return dict(proposal_seq=self.proposal_seq, log_seq=self.log_seq)
-
         # CRUX of the paxos protocol - Find the most recent log_seq with most
         # recent accepted_seq. Only this value should be proposed
-        srv = None
+        srv = commit_id = None
         log_seq = accepted_seq = 0
-        commit_id = ''
         for k, v in res.items():
             old = log_seq, accepted_seq
             new = v['log_seq'], v['accepted_seq']
@@ -62,10 +51,11 @@ class Client():
                 accepted_seq = v['accepted_seq']
 
         if 0 == log_seq:
-            raise Exception('LAST_RECORD_NOT_FOUND')
+            self.log_seq = 0
+            self.proposal_seq = proposal_seq
+            return dict(log_seq=0)
 
-        # Found the location of the most recent log record
-        # Now fetch the octets from the server
+        # Fetch the octets from the server
         url = f'/read/log_seq/{log_seq}/what/body'
         result = await self.client.server(srv, url)
         if not result:
@@ -75,7 +65,6 @@ class Client():
         hdr = json.loads(hdr)
 
         assert (hdr['length'] == len(octets))
-        assert (hdr['log_seq'] == log_seq)
         assert (hdr['commit_id'] == commit_id)
         assert (hdr['accepted_seq'] == accepted_seq)
 
