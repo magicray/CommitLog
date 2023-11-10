@@ -39,7 +39,7 @@ class Client():
         # CRUX of the paxos protocol - Find the most recent log_seq with most
         # recent accepted_seq. Only this value should be proposed
         srv = commit_id = None
-        log_seq = accepted_seq = 0
+        log_seq = accepted_seq = -1
         for k, v in res.items():
             old = log_seq, accepted_seq
             new = v['log_seq'], v['accepted_seq']
@@ -65,6 +65,7 @@ class Client():
         hdr = json.loads(hdr)
 
         assert (hdr['length'] == len(octets))
+        assert (hdr['log_seq'] == log_seq)
         assert (hdr['commit_id'] == commit_id)
         assert (hdr['accepted_seq'] == accepted_seq)
 
@@ -88,6 +89,11 @@ class Client():
 
         if not all([vlist[0] == v for v in vlist]):
             raise Exception('INCONSISTENT_WRITE')
+
+        assert (vlist[0]['length'] == len(octets))
+        assert (vlist[0]['log_seq'] == log_seq)
+        assert (vlist[0]['commit_id'] == commit_id)
+        assert (vlist[0]['accepted_seq'] == proposal_seq)
 
         self.log_seq = log_seq
         self.proposal_seq = proposal_seq

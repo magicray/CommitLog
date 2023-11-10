@@ -178,8 +178,12 @@ async def purge(ctx, log_seq):
 
 
 async def cmd_append():
-    await G.client.reset()
-    log(await G.client.append(sys.stdin.buffer.read()))
+    try:
+        await G.client.reset()
+        log(await G.client.append(sys.stdin.buffer.read()))
+    except Exception as e:
+        log(e)
+        exit(1)
 
 
 async def cmd_backup(log_id):
@@ -203,7 +207,7 @@ async def cmd_backup(log_id):
             seq += 1
             delay = 1
         except Exception as e:
-            log(f'wait({delay}) - seq({seq}) max({max_seq}) exception({e})')
+            log(f'wait({delay}) seq({seq}) max({max_seq}) exception({e})')
             await asyncio.sleep(delay)
             delay = min(60, 2*delay)
 
@@ -216,8 +220,8 @@ if '__main__' == __name__:
     G.add_argument('--cert', help='certificate path')
     G.add_argument('--cacert', help='ca certificate path')
     G.add_argument('--servers', help='comma separated list of server ip:port')
-    G.add_argument('--backup', help='backup directory')
     G.add_argument('--purge', type=int, help='purge before this seq number')
+    G.add_argument('--append', help='append data')
     G = G.parse_args()
 
     if G.servers:
@@ -231,11 +235,7 @@ if '__main__' == __name__:
             promise=paxos_promise, commit=paxos_accept)))
     elif G.purge:
         log(asyncio.run(G.client.purge(G.purge)))
-    elif G.backup:
-        asyncio.run(cmd_backup(log_id))
+    elif G.append:
+        asyncio.run(cmd_append())
     else:
-        try:
-            asyncio.run(cmd_append())
-        except Exception as e:
-            log(e)
-            exit(1)
+        asyncio.run(cmd_backup(log_id))
