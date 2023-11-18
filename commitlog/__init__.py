@@ -122,7 +122,7 @@ class Client():
         assert (hdr['log_id'] == self.cert_subject)
         assert (hdr['log_seq'] == hdrs[0][1]['log_seq'])
         assert (hdr['checksum'] == hashlib.md5(octets).hexdigest())
-        assert (hdr['accepted_seq'] == hdrs[0][0])
+        assert (hdr.pop('accepted_seq') == hdrs[0][0])
 
         return hdr, octets
 

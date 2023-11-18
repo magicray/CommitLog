@@ -95,7 +95,6 @@ async def paxos_promise(ctx, proposal_seq):
         raise Exception('CLOCKS_OUT_OF_SYNC')
 
     os.makedirs(logdir, exist_ok=True)
-
     lockfd = os.open(logdir, os.O_RDONLY)
     try:
         fcntl.flock(lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -128,8 +127,10 @@ async def paxos_accept(ctx, proposal_seq, log_seq, checksum, octets):
     if not octets or type(octets) is not bytes:
         raise Exception('INVALID_OCTETS')
 
-    os.makedirs(logdir, exist_ok=True)
+    if log_seq < 1:
+        raise Exception('INVALID_LOGSEQ')
 
+    os.makedirs(logdir, exist_ok=True)
     lockfd = os.open(logdir, os.O_RDONLY)
     try:
         fcntl.flock(lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
