@@ -1,6 +1,4 @@
 import os
-import ssl
-import uuid
 import asyncio
 import logging
 import argparse
@@ -11,8 +9,7 @@ from logging import critical as log
 
 async def cmd_tail(G):
     G.client = commitlog.Client(G.cacert, G.cert, G.servers)
-    ctx = ssl.create_default_context(cafile=G.cert)
-    log_id = str(uuid.UUID(ctx.get_ca_certs()[0]['subject'][0][0][1]))
+    log_id = G.client.cert_subject
 
     os.makedirs(commitlog.server.path_join('commitlog', log_id), exist_ok=True)
 
