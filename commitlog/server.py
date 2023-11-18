@@ -39,7 +39,7 @@ def get_max_seq(log_id):
 async def rpc_max_seq(ctx):
     log_id = ctx['subject']
 
-    return get_max_seq(log_id)
+    return json.dumps(get_max_seq(log_id)).encode()
 
 
 def dump(path, *objects):
@@ -63,9 +63,9 @@ async def read(ctx, log_seq, what):
 
     if os.path.isfile(path):
         with open(path, 'rb') as fd:
-            return fd.read() if 'body' == what else json.loads(fd.readline())
+            return fd.read() if 'body' == what else fd.readline()
     elif 'header' == what:
-        return dict(accepted_seq=0)
+        return json.dumps(dict(accepted_seq=0)).encode()
 
 
 def get_promised_seq(logdir):
@@ -146,7 +146,7 @@ async def paxos_accept(ctx, proposal_seq, log_seq, checksum, octets):
 
             dump(seq2path(log_id, log_seq), hdr, b'\n', octets)
 
-            return hdr
+            return json.dumps(hdr).encode()
     finally:
         os.sync()
         os.close(lockfd)
@@ -165,7 +165,7 @@ async def purge(ctx, log_seq):
         for y in sorted_dir(path_join(logdir, x)):
             for f in sorted_dir(path_join(logdir, x, y)):
                 if f > log_seq:
-                    return count
+                    return json.dumps(count).encode()
 
                 os.remove(path_join(logdir, x, y, f))
                 count += 1

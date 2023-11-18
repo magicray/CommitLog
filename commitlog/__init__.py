@@ -74,22 +74,23 @@ class Client():
 
         url = f'/commit/proposal_seq/{proposal_seq}'
         url += f'/log_seq/{log_seq}/checksum/{checksum}'
-        vlist = list((await self.client.filtered(url, octets)).values())
-
-        if self.quorum > len(vlist):
+        res = await self.client.filtered(url, octets)
+        if self.quorum > len(res):
             raise Exception('NO_QUORUM')
 
-        if not all([vlist[0] == v for v in vlist]):
+        vset = set(res.values())
+        if 1 != len(vset):
             raise Exception('INCONSISTENT_WRITE')
 
-        assert (vlist[0]['length'] == len(octets))
-        assert (vlist[0]['log_seq'] == log_seq)
-        assert (vlist[0]['checksum'] == checksum)
-        assert (vlist[0]['accepted_seq'] == proposal_seq)
+        hdr = json.loads(vset.pop())
+        assert (hdr['length'] == len(octets))
+        assert (hdr['log_seq'] == log_seq)
+        assert (hdr['checksum'] == checksum)
+        assert (hdr['accepted_seq'] == proposal_seq)
 
         self.log_seq = log_seq
         self.proposal_seq = proposal_seq
-        return vlist[0]
+        return hdr
 
     async def tail(self, log_seq):
         url = f'/read/log_seq/{log_seq}/what/header'
@@ -99,6 +100,7 @@ class Client():
 
         hdrs = list()
         for k, v in res.items():
+            v = json.loads(v)
             # accepted_seq, header, server
             hdrs.append((v.pop('accepted_seq'), v, k))
 
@@ -121,7 +123,7 @@ class Client():
         if self.quorum > len(res):
             raise Exception('NO_QUORUM')
 
-        return max(res.values())
+        return max([json.loads(v) for v in res.values()])
 
     async def purge(self, log_seq):
         return await self.client.filtered(f'/purge/log_seq/{log_seq}')

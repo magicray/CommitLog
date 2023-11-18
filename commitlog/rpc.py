@@ -50,35 +50,29 @@ class Server():
             except Exception:
                 return writer.close()
 
-            status = '500 Internal Server Error'
-            mime_type = 'application/octet-stream'
-
             try:
-                res = await self.methods[method](ctx, **params)
-
-                if type(res) is not bytes:
-                    res = json.dumps(res, indent=4, sort_keys=True).encode()
-                    mime_type = 'application/json'
-
+                octets = await self.methods[method](ctx, **params)
                 status = '200 OK'
             except Exception:
                 traceback.print_exc()
-                res = traceback.format_exc().encode()
+                octets = traceback.format_exc().encode()
+                status = '500 Internal Server Error'
 
             try:
                 writer.write(f'HTTP/1.1 {status}\n'.encode())
-                writer.write(f'content-length: {len(res)}\n'.encode())
-                if res:
-                    writer.write(f'content-type: {mime_type}\n\n'.encode())
-                    writer.write(res)
+                if octets:
+                    writer.write(f'content-length: {len(octets)}\n\n'.encode())
+                    writer.write(octets)
                 else:
+                    writer.write('content-length: 0\n'.encode())
                     writer.write(b'\n')
+                    octets = b''
                 await writer.drain()
             except Exception:
                 return writer.close()
 
             params.pop('octets', None)
-            log(f'{peer} {count} {method} {status} {params} {len(res)}')
+            log(f'{peer} {count} {method} {status} {params} {len(octets)}')
             count += 1
 
     async def run(self, cacert, cert, port, methods):
@@ -138,8 +132,6 @@ class Client():
                 k, v = line.decode().split(':', maxsplit=1)
                 if 'content-length' == k.strip().lower():
                     length = int(v.strip())
-                if 'content-type' == k.strip().lower():
-                    mime_type = v.strip()
 
             octets = b''
             if length > 0:
@@ -147,8 +139,6 @@ class Client():
                 assert (length == len(octets))
 
             if status.startswith(b'HTTP/1.1 200 OK'):
-                if 'application/json' == mime_type:
-                    return json.loads(octets)
                 return octets
 
             raise Exception(octets.decode())
