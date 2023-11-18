@@ -1,6 +1,6 @@
 import json
-import uuid
 import time
+import hashlib
 import commitlog.rpc
 
 
@@ -38,50 +38,42 @@ class Client():
 
         # CRUX of the paxos protocol - Find the most recent log_seq with most
         # recent accepted_seq. Only this value should be proposed
-        srv = commit_id = None
-        log_seq = accepted_seq = -1
-        for k, v in res.items():
-            old = log_seq, accepted_seq
-            new = v['log_seq'], v['accepted_seq']
+        hdr = dict(log_seq=-1, accepted_seq=-1)
+        octets = None
+        for v in res.values():
+            new_hdr, new_octets = v.split(b'\n', maxsplit=1)
+            new_hdr = json.loads(new_hdr)
+
+            old = hdr['log_seq'], hdr['accepted_seq']
+            new = new_hdr['log_seq'], new_hdr['accepted_seq']
 
             if new > old:
-                srv = k
-                log_seq = v['log_seq']
-                commit_id = v['commit_id']
-                accepted_seq = v['accepted_seq']
+                hdr = new_hdr
+                octets = new_octets
 
-        if 0 == log_seq:
+        assert (hdr['log_seq'] > -1)
+
+        if 0 == hdr['log_seq']:
             self.log_seq = 0
             self.proposal_seq = proposal_seq
             return dict(log_seq=0)
 
-        # Fetch the octets from the server
-        url = f'/read/log_seq/{log_seq}/what/body'
-        result = await self.client.server(srv, url)
-        if not result:
-            raise Exception('LAST_RECORD_NOT_FETCHED')
-
-        hdr, octets = result.split(b'\n', maxsplit=1)
-        hdr = json.loads(hdr)
-
         assert (hdr['length'] == len(octets))
-        assert (hdr['log_seq'] == log_seq)
-        assert (hdr['commit_id'] == commit_id)
-        assert (hdr['accepted_seq'] == accepted_seq)
+        assert (hdr['checksum'] == hashlib.md5(octets).hexdigest())
 
         # Paxos ACCEPT phase - re-write the last blob to sync all the nodes
-        self.log_seq = log_seq - 1
+        self.log_seq = hdr['log_seq'] - 1
         self.proposal_seq = proposal_seq
-        return await self.append(octets, commit_id)
+        return await self.append(octets)
 
-    async def append(self, octets, commit_id=None):
+    async def append(self, octets):
         proposal_seq, log_seq = self.proposal_seq, self.log_seq + 1
         self.proposal_seq = self.log_seq = None
 
-        commit_id = commit_id if commit_id else str(uuid.uuid4())
+        checksum = hashlib.md5(octets).hexdigest()
 
         url = f'/commit/proposal_seq/{proposal_seq}'
-        url += f'/log_seq/{log_seq}/commit_id/{commit_id}'
+        url += f'/log_seq/{log_seq}/checksum/{checksum}'
         vlist = list((await self.client.filtered(url, octets)).values())
 
         if self.quorum > len(vlist):
@@ -92,7 +84,7 @@ class Client():
 
         assert (vlist[0]['length'] == len(octets))
         assert (vlist[0]['log_seq'] == log_seq)
-        assert (vlist[0]['commit_id'] == commit_id)
+        assert (vlist[0]['checksum'] == checksum)
         assert (vlist[0]['accepted_seq'] == proposal_seq)
 
         self.log_seq = log_seq
@@ -119,7 +111,7 @@ class Client():
 
         assert (hdr['length'] == len(octets))
         assert (hdr['log_seq'] == hdrs[0][1]['log_seq'])
-        assert (hdr['commit_id'] == hdrs[0][1]['commit_id'])
+        assert (hdr['checksum'] == hashlib.md5(octets).hexdigest())
         assert (hdr['accepted_seq'] == hdrs[0][0])
 
         return hdr, octets

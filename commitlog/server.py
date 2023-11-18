@@ -1,6 +1,4 @@
 import os
-import sys
-import ssl
 import time
 import uuid
 import json
@@ -11,7 +9,6 @@ import logging
 import argparse
 import commitlog
 import commitlog.rpc
-from logging import critical as log
 
 
 def path_join(*path):
@@ -110,9 +107,9 @@ async def paxos_promise(ctx, proposal_seq):
             max_seq = get_max_seq(log_id)
             if max_seq > 0:
                 with open(seq2path(log_id, max_seq), 'rb') as fd:
-                    return json.loads(fd.readline())
+                    return fd.read()
 
-            return dict(log_seq=0, accepted_seq=0)
+            return json.dumps(dict(log_seq=0, accepted_seq=0)).encode() + b'\n'
     finally:
         os.sync()
         os.close(lockfd)
@@ -120,7 +117,7 @@ async def paxos_promise(ctx, proposal_seq):
 
 # ACCEPT - Client has sent the most recent value from the promise phase.
 # Stale leaders blocked. Only the most recent can reach this stage.
-async def paxos_accept(ctx, proposal_seq, log_seq, commit_id, octets):
+async def paxos_accept(ctx, proposal_seq, log_seq, checksum, octets):
     log_id = ctx['subject']
     logdir = path_join('commitlog', log_id)
     log_seq = int(log_seq)
@@ -145,7 +142,7 @@ async def paxos_accept(ctx, proposal_seq, log_seq, commit_id, octets):
         # Paxos ACCEPT response - Save octets and return success
         if proposal_seq >= promised_seq:
             hdr = dict(accepted_seq=proposal_seq, log_seq=log_seq,
-                       log_id=log_id, commit_id=commit_id, length=len(octets))
+                       log_id=log_id, checksum=checksum, length=len(octets))
 
             dump(seq2path(log_id, log_seq), hdr, b'\n', octets)
 
@@ -177,41 +174,6 @@ async def purge(ctx, log_seq):
         shutil.rmtree(path_join(logdir, x))
 
 
-async def cmd_append():
-    try:
-        await G.client.reset()
-        log(await G.client.append(sys.stdin.buffer.read()))
-    except Exception as e:
-        log(e)
-        exit(1)
-
-
-async def cmd_backup(log_id):
-    os.makedirs(path_join('commitlog', log_id), exist_ok=True)
-
-    seq = get_max_seq(log_id) + 1
-    delay = 1
-    max_seq = 0
-
-    while True:
-        try:
-            if seq >= max_seq:
-                max_seq = await G.client.max_seq()
-                if seq >= max_seq:
-                    raise Exception('SEQ_OUT_OF_RANGE')
-
-            hdr, octets = await G.client.tail(seq)
-            dump(seq2path(log_id, seq), hdr, b'\n', octets)
-            log(hdr)
-
-            seq += 1
-            delay = 1
-        except Exception as e:
-            log(f'wait({delay}) seq({seq}) max({max_seq}) exception({e})')
-            await asyncio.sleep(delay)
-            delay = min(60, 2*delay)
-
-
 if '__main__' == __name__:
     logging.basicConfig(format='%(asctime)s %(process)d : %(message)s')
 
@@ -219,23 +181,8 @@ if '__main__' == __name__:
     G.add_argument('--port', help='port number for server')
     G.add_argument('--cert', help='certificate path')
     G.add_argument('--cacert', help='ca certificate path')
-    G.add_argument('--servers', help='comma separated list of server ip:port')
-    G.add_argument('--purge', type=int, help='purge before this seq number')
-    G.add_argument('--append', help='append data')
     G = G.parse_args()
 
-    if G.servers:
-        G.client = commitlog.Client(G.cacert, G.cert, G.servers)
-        ctx = ssl.create_default_context(cafile=G.cert)
-        log_id = str(uuid.UUID(ctx.get_ca_certs()[0]['subject'][0][0][1]))
-
-    if G.port:
-        asyncio.run(commitlog.rpc.Server().run(G.cacert, G.cert, G.port, dict(
-            read=read, purge=purge, max_seq=rpc_max_seq,
-            promise=paxos_promise, commit=paxos_accept)))
-    elif G.purge:
-        log(asyncio.run(G.client.purge(G.purge)))
-    elif G.append:
-        asyncio.run(cmd_append())
-    else:
-        asyncio.run(cmd_backup(log_id))
+    asyncio.run(commitlog.rpc.Server().run(G.cacert, G.cert, G.port, dict(
+        read=read, purge=purge, max_seq=rpc_max_seq,
+        promise=paxos_promise, commit=paxos_accept)))
