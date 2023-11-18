@@ -1,3 +1,5 @@
+import ssl
+import uuid
 import json
 import time
 import hashlib
@@ -13,7 +15,7 @@ class RPCClient(commitlog.rpc.Client):
         result = dict()
 
         for s, r in zip(self.conns.keys(), res):
-            if r and type(r) in (bytes, str, bool, int, float, list, dict):
+            if r and type(r) is bytes:
                 result[s] = r
 
         return result
@@ -24,6 +26,9 @@ class Client():
         self.client = RPCClient(cacert, cert, servers)
         self.quorum = self.client.quorum
         self.servers = servers
+
+        cert = ssl.create_default_context(cafile=cert).get_ca_certs()[0]
+        self.cert_subject = str(uuid.UUID(cert['subject'][0][0][1]))
 
     # PAXOS Client
     async def reset(self):
@@ -59,6 +64,7 @@ class Client():
             return dict(log_seq=0)
 
         assert (hdr['length'] == len(octets))
+        assert (hdr['log_id'] == self.cert_subject)
         assert (hdr['checksum'] == hashlib.md5(octets).hexdigest())
 
         # Paxos ACCEPT phase - re-write the last blob to sync all the nodes
@@ -84,6 +90,7 @@ class Client():
 
         hdr = json.loads(vset.pop())
         assert (hdr['length'] == len(octets))
+        assert (hdr['log_id'] == self.cert_subject)
         assert (hdr['log_seq'] == log_seq)
         assert (hdr['checksum'] == checksum)
         assert (hdr['accepted_seq'] == proposal_seq)
@@ -93,25 +100,26 @@ class Client():
         return hdr
 
     async def tail(self, log_seq):
-        url = f'/read/log_seq/{log_seq}/what/header'
+        url = f'/read/log_seq/{log_seq}/length/512'
         res = await self.client.filtered(url)
         if self.quorum > len(res):
             raise Exception('NO_QUORUM')
 
         hdrs = list()
         for k, v in res.items():
-            v = json.loads(v)
+            v = json.loads(v.split(b'\n')[0])
             # accepted_seq, header, server
             hdrs.append((v.pop('accepted_seq'), v, k))
 
         hdrs = sorted(hdrs, reverse=True)
-        url = f'/read/log_seq/{log_seq}/what/body'
+        url = f'/read/log_seq/{log_seq}'
         result = await self.client.server(hdrs[0][2], url)
 
         hdr, octets = result.split(b'\n', maxsplit=1)
         hdr = json.loads(hdr)
 
         assert (hdr['length'] == len(octets))
+        assert (hdr['log_id'] == self.cert_subject)
         assert (hdr['log_seq'] == hdrs[0][1]['log_seq'])
         assert (hdr['checksum'] == hashlib.md5(octets).hexdigest())
         assert (hdr['accepted_seq'] == hdrs[0][0])

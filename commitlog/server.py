@@ -57,15 +57,17 @@ def dump(path, *objects):
     os.replace(tmp, path)
 
 
-async def read(ctx, log_seq, what):
+async def read(ctx, log_seq, length=-1):
     log_id = ctx['subject']
-    path = seq2path(log_id, int(log_seq))
+    length = int(length)
+    log_seq = int(log_seq)
+    path = seq2path(log_id, log_seq)
 
     if os.path.isfile(path):
         with open(path, 'rb') as fd:
-            return fd.read() if 'body' == what else fd.readline()
-    elif 'header' == what:
-        return json.dumps(dict(accepted_seq=0)).encode()
+            return fd.read(length)
+
+    return json.dumps(dict(accepted_seq=0)).encode()
 
 
 def get_promised_seq(logdir):
