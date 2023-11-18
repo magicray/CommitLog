@@ -1,53 +1,12 @@
 import os
 import ssl
 import uuid
-import json
 import asyncio
 import logging
 import argparse
 import commitlog
-import commitlog.rpc
+import commitlog.server
 from logging import critical as log
-
-
-def path_join(*path):
-    return os.path.join(*[str(p) for p in path])
-
-
-def seq2path(log_id, log_seq):
-    x, y = log_seq//1000000, log_seq//1000
-    return path_join('commitlog', log_id, x, y, log_seq)
-
-
-def get_max_seq(log_id):
-    def reverse_sorted_dir(dirname):
-        files = [int(f) for f in os.listdir(dirname) if f.isdigit()]
-        return sorted(files, reverse=True)
-
-    # Traverse the three level directory hierarchy,
-    # picking the highest numbered dir/file at each level
-    logdir = path_join('commitlog', log_id)
-    for x in reverse_sorted_dir(logdir):
-        for y in reverse_sorted_dir(path_join(logdir, x)):
-            for f in reverse_sorted_dir(path_join(logdir, x, y)):
-                return f
-
-    return 0
-
-
-def dump(path, *objects):
-    path = os.path.abspath(path)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-    tmp = path + '.' + str(uuid.uuid4()) + '.tmp'
-    with open(tmp, 'wb') as fd:
-        for obj in objects:
-            if type(obj) is not bytes:
-                obj = json.dumps(obj, sort_keys=True).encode()
-
-            fd.write(obj)
-
-    os.replace(tmp, path)
 
 
 async def cmd_tail(G):
@@ -55,9 +14,9 @@ async def cmd_tail(G):
     ctx = ssl.create_default_context(cafile=G.cert)
     log_id = str(uuid.UUID(ctx.get_ca_certs()[0]['subject'][0][0][1]))
 
-    os.makedirs(path_join('commitlog', log_id), exist_ok=True)
+    os.makedirs(commitlog.server.path_join('commitlog', log_id), exist_ok=True)
 
-    seq = get_max_seq(log_id) + 1
+    seq = commitlog.server.get_max_seq(log_id) + 1
     delay = 1
     max_seq = 0
 
@@ -69,7 +28,8 @@ async def cmd_tail(G):
                     raise Exception('SEQ_OUT_OF_RANGE')
 
             hdr, octets = await G.client.tail(seq)
-            dump(seq2path(log_id, seq), hdr, b'\n', octets)
+            path = commitlog.server.seq2path(log_id, seq)
+            commitlog.server.dump(path, hdr, b'\n', octets)
             log(hdr)
 
             seq += 1
