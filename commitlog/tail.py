@@ -25,6 +25,7 @@ async def cmd_tail(G):
                     raise Exception('SEQ_OUT_OF_RANGE')
 
             hdr, octets = await G.client.tail(seq)
+            hdr.pop('accepted_seq')
             path = commitlog.server.seq2path(log_id, seq)
             commitlog.server.dump(path, hdr, b'\n', octets)
             log(hdr)

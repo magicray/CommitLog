@@ -52,6 +52,8 @@ class Server():
 
             try:
                 octets = await self.methods[method](ctx, **params)
+                if type(octets) is not bytes:
+                    raise Exception(f'INVALID_RESPONSE_TYPE - {type(octets)}')
                 status = '200 OK'
             except Exception:
                 traceback.print_exc()
@@ -60,13 +62,8 @@ class Server():
 
             try:
                 writer.write(f'HTTP/1.1 {status}\n'.encode())
-                if octets:
-                    writer.write(f'content-length: {len(octets)}\n\n'.encode())
-                    writer.write(octets)
-                else:
-                    writer.write('content-length: 0\n'.encode())
-                    writer.write(b'\n')
-                    octets = b''
+                writer.write(f'content-length: {len(octets)}\n\n'.encode())
+                writer.write(octets)
                 await writer.drain()
             except Exception:
                 return writer.close()
@@ -123,7 +120,6 @@ class Client():
 
             status = await reader.readline()
 
-            length = 0
             while True:
                 line = await reader.readline()
                 line = line.strip()
@@ -133,10 +129,8 @@ class Client():
                 if 'content-length' == k.strip().lower():
                     length = int(v.strip())
 
-            octets = b''
-            if length > 0:
-                octets = await reader.readexactly(length)
-                assert (length == len(octets))
+            octets = await reader.readexactly(length)
+            assert (length == len(octets))
 
             if status.startswith(b'HTTP/1.1 200 OK'):
                 return octets

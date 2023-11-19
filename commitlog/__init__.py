@@ -56,8 +56,6 @@ class Client():
                 hdr = new_hdr
                 octets = new_octets
 
-        assert (hdr['log_seq'] > -1)
-
         if 0 == hdr['log_seq']:
             self.log_seq = 0
             self.proposal_seq = proposal_seq
@@ -65,6 +63,7 @@ class Client():
 
         assert (hdr['length'] == len(octets))
         assert (hdr['log_id'] == self.cert_subject)
+        assert (hdr['log_seq'] > -1)
         assert (hdr['checksum'] == hashlib.md5(octets).hexdigest())
 
         # Paxos ACCEPT phase - re-write the last blob to sync all the nodes
@@ -122,7 +121,7 @@ class Client():
         assert (hdr['log_id'] == self.cert_subject)
         assert (hdr['log_seq'] == hdrs[0][1]['log_seq'])
         assert (hdr['checksum'] == hashlib.md5(octets).hexdigest())
-        assert (hdr.pop('accepted_seq') == hdrs[0][0])
+        assert (hdr['accepted_seq'] == hdrs[0][0])
 
         return hdr, octets
 
