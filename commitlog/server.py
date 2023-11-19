@@ -99,18 +99,20 @@ async def paxos_promise(ctx, proposal_seq):
     try:
         fcntl.flock(lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
+        if proposal_seq <= get_promised_seq(logdir):
+            raise Exception(f'INVALID_PROMISE_SEQ {proposal_seq}')
+
         # Record new proposal_seq as it is bigger than the current value.
         # Any future writes with a smaller seq would be rejected.
-        if proposal_seq > get_promised_seq(logdir):
-            put_promised_seq(logdir, proposal_seq)
+        put_promised_seq(logdir, proposal_seq)
 
-            # Paxos PROMISE response - return latest log record
-            max_seq = get_max_seq(log_id)
-            if max_seq > 0:
-                with open(seq2path(log_id, max_seq), 'rb') as fd:
-                    return fd.read()
+        # Paxos PROMISE response - return latest log record
+        max_seq = get_max_seq(log_id)
+        if max_seq > 0:
+            with open(seq2path(log_id, max_seq), 'rb') as fd:
+                return fd.read()
 
-            return json.dumps(dict(log_seq=0, accepted_seq=0)).encode() + b'\n'
+        return json.dumps(dict(log_seq=0, accepted_seq=0)).encode() + b'\n'
     finally:
         os.sync()
         os.close(lockfd)
@@ -136,6 +138,8 @@ async def paxos_accept(ctx, proposal_seq, log_seq, checksum, octets):
         fcntl.flock(lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
         promised_seq = get_promised_seq(logdir)
+        if proposal_seq < promised_seq:
+            raise Exception(f'INVALID_ACCEPT_SEQ {proposal_seq}')
 
         # Record new proposal_seq as it is bigger than the current value.
         # Any future writes with a smaller seq would be rejected.
@@ -143,13 +147,12 @@ async def paxos_accept(ctx, proposal_seq, log_seq, checksum, octets):
             put_promised_seq(logdir, proposal_seq)
 
         # Paxos ACCEPT response - Save octets and return success
-        if proposal_seq >= promised_seq:
-            hdr = dict(accepted_seq=proposal_seq, log_seq=log_seq,
-                       log_id=log_id, checksum=checksum, length=len(octets))
+        hdr = dict(accepted_seq=proposal_seq, log_seq=log_seq, log_id=log_id,
+                   checksum=checksum, length=len(octets))
 
-            dump(seq2path(log_id, log_seq), hdr, b'\n', octets)
+        dump(seq2path(log_id, log_seq), hdr, b'\n', octets)
 
-            return json.dumps(hdr).encode()
+        return json.dumps(hdr).encode()
     finally:
         os.sync()
         os.close(lockfd)
