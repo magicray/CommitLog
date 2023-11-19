@@ -104,24 +104,23 @@ class Client():
         if self.quorum > len(res):
             raise Exception('NO_QUORUM')
 
-        hdrs = list()
+        srv = None
+        header = dict(accepted_seq=0)
         for k, v in res.items():
             v = json.loads(v.split(b'\n')[0])
-            # accepted_seq, header, server
-            hdrs.append((v.pop('accepted_seq'), v, k))
 
-        hdrs = sorted(hdrs, reverse=True)
-        url = f'/read/log_seq/{log_seq}'
-        result = await self.client.server(hdrs[0][2], url)
+            if v['accepted_seq'] > header['accepted_seq']:
+                srv, header = k, v
 
-        hdr, octets = result.split(b'\n', maxsplit=1)
+        res = await self.client.server(srv, f'/read/log_seq/{log_seq}')
+        hdr, octets = res.split(b'\n', maxsplit=1)
         hdr = json.loads(hdr)
 
         assert (hdr['length'] == len(octets))
         assert (hdr['log_id'] == self.cert_subject)
-        assert (hdr['log_seq'] == hdrs[0][1]['log_seq'])
+        assert (hdr['log_seq'] == log_seq)
         assert (hdr['checksum'] == hashlib.md5(octets).hexdigest())
-        assert (hdr['accepted_seq'] == hdrs[0][0])
+        assert (hdr['accepted_seq'] == header['accepted_seq'])
 
         return hdr, octets
 
