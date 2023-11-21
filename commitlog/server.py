@@ -150,9 +150,11 @@ async def paxos_accept(ctx, proposal_seq, log_seq, checksum, octets):
         hdr = dict(accepted_seq=proposal_seq, log_seq=log_seq, log_id=log_id,
                    checksum=checksum, length=len(octets))
 
-        dump(seq2path(log_id, log_seq), hdr, b'\n', octets)
+        path = seq2path(log_id, log_seq)
+        dump(path, hdr, b'\n', octets)
 
-        return json.dumps(hdr).encode()
+        with open(path) as fd:
+            return fd.readline()
     finally:
         os.sync()
         os.close(lockfd)
