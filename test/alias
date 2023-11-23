@@ -1,0 +1,4 @@
+export PYTHONPATH=~/magicray/commitlog
+alias commitlog_append='python3 -mcommitlog.append --cacert cacert.pem --cert cert.pem --servers localhost:5001,localhost:5002,localhost:5003,localhost:5004,localhost:5005'
+alias commitlog_tail='python3 -mcommitlog.tail --cacert cacert.pem --cert cert.pem --servers localhost:5001,localhost:5002,localhost:5003,localhost:5004,localhost:5005'
+alias commitlog_purge='python3 -mcommitlog.purge --cacert cacert.pem --cert cert.pem --servers localhost:5001,localhost:5002,localhost:5003,localhost:5004,localhost:5005'
