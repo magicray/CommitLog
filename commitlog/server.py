@@ -153,7 +153,7 @@ async def paxos_accept(ctx, proposal_seq, log_seq, checksum, octets):
         path = seq2path(log_id, log_seq)
         dump(path, hdr, b'\n', octets)
 
-        with open(path) as fd:
+        with open(path, 'rb') as fd:
             return fd.readline()
     finally:
         os.sync()
