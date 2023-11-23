@@ -1,0 +1,7 @@
+#!/bin/bash
+
+for n in $(seq $1); do
+    let x=$((n/1000000))
+    let y=$((n/1000))
+    cat */commitlog/f15b5be5-15fa-4c61-b266-9c9472d6af4b/$x/$y/$n | cut -c 34- | sort | uniq -c | grep log_seq
+done
