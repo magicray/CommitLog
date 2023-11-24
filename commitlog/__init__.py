@@ -63,7 +63,7 @@ class Client():
 
         assert (hdr['length'] == len(octets))
         assert (hdr['log_id'] == self.cert_subject)
-        assert (hdr['log_seq'] > -1)
+        assert (hdr['log_seq'] > 0)
         assert (hdr['checksum'] == hashlib.md5(octets).hexdigest())
 
         # Paxos ACCEPT phase - re-write the last blob to sync all the nodes
@@ -116,9 +116,10 @@ class Client():
         hdr, octets = res.split(b'\n', maxsplit=1)
         hdr = json.loads(hdr)
 
-        assert (hdr['length'] == len(octets))
-        assert (hdr['log_id'] == self.cert_subject)
-        assert (hdr['log_seq'] == log_seq)
+        assert (hdr['length'] == len(octets) == header['length'])
+        assert (hdr['log_id'] == self.cert_subject == header['log_id'])
+        assert (hdr['log_seq'] == log_seq == header['log_seq'])
+        assert (hdr['checksum'] == header['checksum'])
         assert (hdr['checksum'] == hashlib.md5(octets).hexdigest())
         assert (hdr['accepted_seq'] == header['accepted_seq'])
 

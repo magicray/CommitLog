@@ -1,5 +1,4 @@
 import ssl
-import json
 import uuid
 import asyncio
 import traceback
@@ -14,16 +13,16 @@ class Server():
 
         while True:
             try:
-                peer = writer.get_extra_info('socket').getpeername()
-                ctx = dict(ip=peer[0])
-
+                ctx = dict()
                 cert = writer.get_extra_info('peercert')
-                ctx['subject'] = str(uuid.UUID(cert['subject'][0][0][1]))
+                peer = writer.get_extra_info('socket').getpeername()
 
+                subject = str(uuid.UUID(cert['subject'][0][0][1]))
                 ip_list = [y for x, y in cert['subjectAltName']
                            if 'IP Address' == x]
-                if ctx['ip'] not in ip_list:
-                    log('IP Address mismatch {ip_list} {ctx}')
+
+                if peer[0] in ip_list:
+                    ctx = dict(ip=peer[0], subject=subject)
             except Exception:
                 pass
 
@@ -108,10 +107,6 @@ class Client():
                     server[0], server[1], ssl=self.SSL)
 
             reader, writer = self.conns[server]
-
-            octets = octets if octets else b''
-            if type(octets) is not bytes:
-                octets = json.dumps(octets).encode()
 
             writer.write(f'POST {resource} HTTP/1.1\n'.encode())
             writer.write(f'content-length: {len(octets)}\n\n'.encode())
