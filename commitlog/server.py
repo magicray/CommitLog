@@ -6,6 +6,7 @@ import fcntl
 import shutil
 import asyncio
 import logging
+import hashlib
 import argparse
 import commitlog
 import commitlog.rpc
@@ -110,7 +111,17 @@ async def paxos_promise(ctx, proposal_seq):
         max_seq = get_max_seq(log_id)
         if max_seq > 0:
             with open(seq2path(log_id, max_seq), 'rb') as fd:
-                return fd.read()
+                octets = fd.read()
+
+                x, y = octets.split(b'\n', maxsplit=1)
+                hdr = json.loads(x)
+
+                if (hdr['length'] != len(y)) or (
+                      hdr['log_seq'] != max_seq) or (
+                      hdr['checksum'] != hashlib.md5(y).hexdigest()):
+                    raise Exception('CORRUPTED_FILE')
+
+                return octets
 
         return json.dumps(dict(log_seq=0, accepted_seq=0)).encode() + b'\n'
     finally:
