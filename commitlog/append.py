@@ -3,7 +3,6 @@ import asyncio
 import logging
 import argparse
 import commitlog
-import commitlog.rpc
 from logging import critical as log
 
 

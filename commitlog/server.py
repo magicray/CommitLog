@@ -7,9 +7,9 @@ import shutil
 import asyncio
 import logging
 import hashlib
+import httprpc
 import argparse
-import commitlog
-import commitlog.rpc
+from commitlog import ASSERT
 
 
 def path_join(*path):
@@ -116,10 +116,9 @@ async def paxos_promise(ctx, proposal_seq):
                 x, y = octets.split(b'\n', maxsplit=1)
                 hdr = json.loads(x)
 
-                if (hdr['length'] != len(y)) or (
-                      hdr['log_seq'] != max_seq) or (
-                      hdr['checksum'] != hashlib.md5(y).hexdigest()):
-                    raise Exception('CORRUPTED_FILE')
+                ASSERT(hdr['length'] == len(y))
+                ASSERT(hdr['log_seq'] == max_seq)
+                ASSERT(hdr['checksum'] == hashlib.md5(y).hexdigest())
 
                 return octets
 
@@ -202,6 +201,6 @@ if '__main__' == __name__:
     G.add_argument('--cacert', help='ca certificate path')
     G = G.parse_args()
 
-    asyncio.run(commitlog.rpc.Server().run(G.cacert, G.cert, G.port, dict(
+    asyncio.run(httprpc.Server().run(G.cacert, G.cert, G.port, dict(
         read=read, purge=purge, max_seq=rpc_max_seq,
         promise=paxos_promise, commit=paxos_accept)))
